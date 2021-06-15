@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Themelio Labs"]
 edition = "2018"
 
-description = "High-level API for the Themelio node peer-to-peer protocol."
+description = "High-level API for the Themelio full node peer-to-peer protocol."
 license = "MPL-2.0"
 repository = "https://github.com/themeliolabs/themelio-nodeprot"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
