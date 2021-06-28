@@ -10,7 +10,7 @@ use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
 use serde::{de::DeserializeOwned, Serialize};
 use smol::stream::StreamExt;
 use themelio_stf::{
-    Block, CoinDataHeight, CoinID, ConsensusProof, Denom, Header, NetID, PoolState, SmtMapping,
+    Block, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey, PoolState, SmtMapping,
     StakeDoc, StakeMapping, Transaction, TxHash, STAKE_EPOCH,
 };
 use tmelcrypt::HashVal;
@@ -219,7 +219,7 @@ impl ValClientSnapshot {
     }
 
     /// Gets a pool info.
-    pub async fn get_pool(&self, denom: Denom) -> melnet::Result<Option<PoolState>> {
+    pub async fn get_pool(&self, denom: PoolKey) -> melnet::Result<Option<PoolState>> {
         self.get_smt_value_serde(Substate::Pools, denom).await
     }
 
@@ -336,7 +336,7 @@ impl NodeClient {
     }
 }
 
-#[cached::proc_macro::cached(result = true)]
+#[cached::proc_macro::cached(result = true, size = 1000)]
 async fn get_stakers_raw(
     this: NodeClient,
     height: u64,
@@ -345,7 +345,7 @@ async fn get_stakers_raw(
         .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
 }
 
-#[cached::proc_macro::cached(result = true)]
+#[cached::proc_macro::cached(result = true, size = 1000)]
 async fn get_abbr_block(
     this: NodeClient,
     height: u64,
@@ -360,7 +360,7 @@ async fn get_summary(this: NodeClient) -> melnet::Result<StateSummary> {
         .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
 }
 
-#[cached::proc_macro::cached(result = true)]
+#[cached::proc_macro::cached(result = true, size = 10000)]
 async fn get_smt_branch(
     this: NodeClient,
     height: u64,
