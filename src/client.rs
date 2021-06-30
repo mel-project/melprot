@@ -4,18 +4,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use futures_util::stream::FuturesUnordered;
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
 use serde::{de::DeserializeOwned, Serialize};
-use smol::stream::StreamExt;
 use themelio_stf::{
-    Block, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey, PoolState, SmtMapping,
-    StakeDoc, StakeMapping, Transaction, TxHash, STAKE_EPOCH,
+    AbbrBlock, Block, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey, PoolState,
+    SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash, STAKE_EPOCH,
 };
 use tmelcrypt::HashVal;
 
-use crate::{AbbreviatedBlock, NodeRequest, StateSummary, Substate};
+use crate::{NodeRequest, StateSummary, Substate};
 
 /// A higher-level client that validates all information.
 #[derive(Debug, Clone)]
@@ -178,7 +176,7 @@ impl ValClientSnapshot {
     /// Gets the whole block at this height.
     pub async fn current_block(&self) -> melnet::Result<Block> {
         let header = self.current_header();
-        let block = get_full_block(self.raw.clone(), self.height).await?;
+        let (block, _) = get_full_block(self.raw.clone(), self.height).await?;
         if block.header != header {
             return Err(MelnetError::Custom("block header does not match".into()));
         }
@@ -313,11 +311,38 @@ impl NodeClient {
     }
 
     /// Gets an "abbreviated block".
-    pub async fn get_abbr_block(
+    pub async fn get_abbr_block(&self, height: u64) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
+        get_abbr_block(self.clone(), height).await
+    }
+
+    /// Gets a full block, given a function that tells known from unknown transactions.
+    pub async fn get_full_block(
         &self,
         height: u64,
-    ) -> melnet::Result<(AbbreviatedBlock, ConsensusProof)> {
-        get_abbr_block(self.clone(), height).await
+        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
+    ) -> melnet::Result<(Block, ConsensusProof)> {
+        let (abbr, cproof) = self.get_abbr_block(height).await?;
+        let known = abbr
+            .txhashes
+            .iter()
+            .copied()
+            .filter_map(get_known_tx)
+            .collect::<Vec<_>>();
+        // send off a request
+        let req =
+            NodeRequest::GetPartialBlock(height, known.iter().map(|t| t.hash_nosigs()).collect());
+        let mut response: Block = stdcode::deserialize(&self.request(req).await?)
+            .map_err(|e| melnet::MelnetError::Custom(e.to_string()))?;
+        for known in known {
+            response.transactions.insert(known);
+        }
+        let new_abbr = response.abbreviate();
+        if new_abbr.header != abbr.header || new_abbr.txhashes != abbr.txhashes {
+            return Err(melnet::MelnetError::Custom(
+                "mismatched abbreviation".into(),
+            ));
+        }
+        Ok((response, cproof))
     }
 
     /// Gets an SMT branch.
@@ -349,7 +374,7 @@ async fn get_stakers_raw(
 async fn get_abbr_block(
     this: NodeClient,
     height: u64,
-) -> melnet::Result<(AbbreviatedBlock, ConsensusProof)> {
+) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
     stdcode::deserialize(&this.request(NodeRequest::GetAbbrBlock(height)).await?)
         .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
 }
@@ -381,53 +406,6 @@ async fn get_smt_branch(
 }
 
 #[cached::proc_macro::cached(result = true, size = 100)]
-async fn get_full_block(this: NodeClient, height: u64) -> melnet::Result<Block> {
-    let (abbr_block, _): (AbbreviatedBlock, ConsensusProof) =
-        stdcode::deserialize(&this.request(NodeRequest::GetAbbrBlock(height)).await?)
-            .map_err(|e| melnet::MelnetError::Custom(e.to_string()))?;
-    let mut txx_tasks = FuturesUnordered::new();
-    let txcount = abbr_block.txhashes.len();
-    for txhash in abbr_block.txhashes {
-        let this = this.clone();
-        txx_tasks.push(async move {
-            let (v, _) = get_smt_branch(
-                this,
-                height,
-                Substate::Transactions,
-                tmelcrypt::hash_single(&txhash.0),
-            )
-            .await?;
-            let tx = stdcode::deserialize(&v).map_err(|_| {
-                melnet::MelnetError::Custom("could not deserialize transaction".into())
-            })?;
-            Ok::<_, melnet::MelnetError>(tx)
-        });
-    }
-
-    let mut txx = vec![];
-    let mut txx_smt = SmtMapping::new(
-        Forest::new(InMemoryBackend::default())
-            .open_tree(Default::default())
-            .unwrap(),
-    );
-    while let Some(val) = txx_tasks.next().await {
-        let tx: Transaction = val?;
-        txx.push(tx.clone());
-        log::debug!("loaded {}/{} transactions", txx.len(), txcount);
-    }
-
-    for tx in txx.iter() {
-        txx_smt.insert(tx.hash_nosigs(), tx.clone());
-    }
-
-    if txx_smt.root_hash() != abbr_block.header.transactions_hash {
-        return Err(melnet::MelnetError::Custom(
-            "full block doesn't hash to the header".into(),
-        ));
-    }
-    Ok(Block {
-        header: abbr_block.header,
-        transactions: txx.into(),
-        proposer_action: abbr_block.proposer_action,
-    })
+async fn get_full_block(this: NodeClient, height: u64) -> melnet::Result<(Block, ConsensusProof)> {
+    this.get_full_block(height, |_| None).await
 }

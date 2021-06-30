@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use melnet::Request;
 use novasmt::CompressedProof;
-use themelio_stf::{ConsensusProof, Transaction};
+use themelio_stf::{AbbrBlock, ConsensusProof, SealedState, Transaction};
 use tmelcrypt::HashVal;
 
-use crate::{AbbreviatedBlock, NodeRequest, StateSummary, Substate};
+use crate::{NodeRequest, StateSummary, Substate};
 
 /// This trait represents a server of Themelio's node protocol. Actual nodes should implement this.
 pub trait NodeServer: Send + Sync {
@@ -13,10 +13,13 @@ pub trait NodeServer: Send + Sync {
     fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> melnet::Result<()>;
 
     /// Gets an "abbreviated block"
-    fn get_abbr_block(&self, height: u64) -> melnet::Result<(AbbreviatedBlock, ConsensusProof)>;
+    fn get_abbr_block(&self, height: u64) -> melnet::Result<(AbbrBlock, ConsensusProof)>;
 
     /// Gets a state summary
     fn get_summary(&self) -> melnet::Result<StateSummary>;
+
+    /// Gets a full state
+    fn get_state(&self, height: u64) -> melnet::Result<SealedState>;
 
     /// Gets an SMT branch
     fn get_smt_branch(
@@ -31,14 +34,16 @@ pub trait NodeServer: Send + Sync {
 }
 
 /// This is a melnet responder that wraps a NodeServer.
-pub struct NodeResponder<S: NodeServer> {
-    server: S,
+pub struct NodeResponder<S: NodeServer + 'static> {
+    server: Arc<S>,
 }
 
 impl<S: NodeServer> NodeResponder<S> {
     /// Creates a new NodeResponder from something that implements NodeServer.
     pub fn new(server: S) -> Self {
-        Self { server }
+        Self {
+            server: Arc::new(server),
+        }
     }
 }
 
@@ -69,6 +74,21 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
                     .get_stakers_raw(height)
                     .map(|v| stdcode::serialize(&v).unwrap()),
             ),
+            NodeRequest::GetPartialBlock(height, mut hvv) => {
+                let server = self.server.clone();
+                hvv.sort();
+                let hvv = hvv;
+                smolscale::spawn(async move {
+                    let res = server.get_state(height).map(|ss| {
+                        let mut blk = ss.to_block();
+                        blk.transactions
+                            .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
+                        stdcode::serialize(&blk).unwrap()
+                    });
+                    req.response.send(res)
+                })
+                .detach();
+            }
         }
     }
 }
