@@ -322,15 +322,17 @@ impl NodeClient {
         get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
     ) -> melnet::Result<(Block, ConsensusProof)> {
         let (abbr, cproof) = self.get_abbr_block(height).await?;
-        let known = abbr
-            .txhashes
-            .iter()
-            .copied()
-            .filter_map(get_known_tx)
-            .collect::<Vec<_>>();
+        let mut known = vec![];
+        let mut unknown = vec![];
+        for txhash in abbr.txhashes.iter() {
+            if let Some(tx) = get_known_tx(*txhash) {
+                known.push(tx);
+            } else {
+                unknown.push(*txhash);
+            }
+        }
         // send off a request
-        let req =
-            NodeRequest::GetPartialBlock(height, known.iter().map(|t| t.hash_nosigs()).collect());
+        let req = NodeRequest::GetPartialBlock(height, unknown);
         let mut response: Block = stdcode::deserialize(&self.request(req).await?)
             .map_err(|e| melnet::MelnetError::Custom(e.to_string()))?;
         for known in known {
