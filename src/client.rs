@@ -18,7 +18,7 @@ use crate::{NodeRequest, StateSummary, Substate};
 pub type BlockHeight = u64;
 
 /// Standard interface for persisting a trusted block.
-pub trait PersistTrustedBlock {
+pub trait TrustedBlockPersister {
     /// Store the latest trusted block in persistent storage
     fn set(&self, netid: NetID, height: BlockHeight, header_hash: HashVal);
     /// Get the latest trusted block from persistent storage if one exists.
@@ -27,20 +27,20 @@ pub trait PersistTrustedBlock {
 
 /// A higher-level client that validates all information.
 #[derive(Debug, Clone)]
-pub struct ValClient {
+pub struct ValClient<T> {
     netid: NetID,
     raw: NodeClient,
-    trusted_height: Arc<Mutex<Option<(BlockHeight, HashVal)>>>,
+    trusted_blocks: T,
 }
 
-impl ValClient {
+impl<T: TrustedBlockPersister> ValClient<T> {
     /// Creates a new ValClient.
-    pub fn new(netid: NetID, remote: SocketAddr) -> Self {
+    pub fn new(netid: NetID, remote: SocketAddr, trusted_blocks: T) -> Self {
         let raw = NodeClient::new(netid, remote);
         Self {
             netid,
             raw,
-            trusted_height: Default::default(),
+            trusted_blocks,
         }
     }
 
@@ -51,15 +51,17 @@ impl ValClient {
 
     /// Trust a height.
     pub fn trust(&self, height: BlockHeight, header_hash: HashVal) {
-        let mut old_trusted = self.trusted_height.lock().unwrap();
-        if let Some((old_height, old_hash)) = old_trusted.as_mut() {
-            if height > *old_height {
-                *old_height = height;
-                *old_hash = header_hash;
-            }
-        } else {
-            *old_trusted = Some((height, header_hash))
-        }
+        let (t_height, t_head) = self.trusted_blocks.get(self.netid)
+            .map(|(cur_height, cur_head)|
+                if height > cur_height {
+                    (height, header_hash)
+                } else {
+                    (cur_height, cur_head)
+                })
+            .or(Some((height, header_hash)))
+            .expect("Trust should always return Some, this is a bug");
+
+        self.trusted_blocks.set(self.netid, t_height, t_head);
     }
 
     /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
@@ -114,7 +116,9 @@ impl ValClient {
 
     /// Helper function to obtain the trusted staker set.
     async fn get_trusted_stakers(&self) -> melnet::Result<(BlockHeight, StakeMapping)> {
-        let (trusted_height, trusted_hash) = self.trusted_height.lock().unwrap().unwrap();
+        let (trusted_height, trusted_hash) = self.trusted_blocks.get(self.netid)
+            .ok_or(MelnetError::Custom("Expected to find a trusted block when fetching trusted stakers".into()))?;
+
         let temp_forest = Forest::new(InMemoryBackend::default());
         let stakers = self.raw.get_stakers_raw(trusted_height).await?;
         // first obtain trusted SMT branch
