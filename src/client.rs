@@ -13,7 +13,7 @@ use themelio_stf::{
 };
 use tmelcrypt::HashVal;
 
-use crate::{NodeRequest, StateSummary, Substate};
+use crate::{InMemoryTrustStore, NodeRequest, StateSummary, Substate};
 
 pub type BlockHeight = u64;
 
@@ -27,7 +27,7 @@ pub trait TrustedBlockPersister {
 
 /// A higher-level client that validates all information.
 #[derive(Debug, Clone)]
-pub struct ValClient<T> {
+pub struct ValClient<T = InMemoryTrustStore> {
     netid: NetID,
     raw: NodeClient,
     trusted_blocks: T,

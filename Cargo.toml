@@ -14,6 +14,7 @@ stdcode= "0.1.2"
 themelio-stf= "0.5"
 tmelcrypt= "0.1.0"
 melnet= "0.1.0"
+acidjson= "0.1.0"
 serde={ version = "1.0.126", features = ["derive"] }
 
 novasmt= "0.1.9"

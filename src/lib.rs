@@ -1,8 +1,10 @@
 mod client;
 mod server;
+mod mem_trust_persister;
 
 pub use client::*;
 pub use server::*;
+pub use mem_trust_persister::*;
 
 use serde::{Deserialize, Serialize};
 use themelio_stf::{ConsensusProof, Header, NetID, Transaction, TxHash};
