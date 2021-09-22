@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
@@ -18,7 +14,7 @@ use crate::{InMemoryTrustStore, NodeRequest, StateSummary, Substate};
 pub type BlockHeight = u64;
 
 /// Standard interface for persisting a trusted block.
-pub trait TrustedBlockPersister {
+pub trait TrustStore {
     /// Store the latest trusted block in persistent storage
     fn set(&self, netid: NetID, height: BlockHeight, header_hash: HashVal);
     /// Get the latest trusted block from persistent storage if one exists.
@@ -30,17 +26,24 @@ pub trait TrustedBlockPersister {
 pub struct ValClient<T = InMemoryTrustStore> {
     netid: NetID,
     raw: NodeClient,
-    trusted_blocks: T,
+    trust_store: T,
 }
 
-impl<T: TrustedBlockPersister> ValClient<T> {
+impl ValClient<InMemoryTrustStore> {
+    /// Creates a new ValClient, hardcoding the default, in-memory trust store.
+    pub fn new(netid: NetID, remote: SocketAddr) -> Self {
+        Self::new_with_truststore(netid, remote, InMemoryTrustStore::new())
+    }
+}
+
+impl<T: TrustStore> ValClient<T> {
     /// Creates a new ValClient.
-    pub fn new(netid: NetID, remote: SocketAddr, trusted_blocks: T) -> Self {
+    pub fn new_with_truststore(netid: NetID, remote: SocketAddr, trust_store: T) -> Self {
         let raw = NodeClient::new(netid, remote);
         Self {
             netid,
             raw,
-            trusted_blocks,
+            trust_store,
         }
     }
 
@@ -51,20 +54,24 @@ impl<T: TrustedBlockPersister> ValClient<T> {
 
     /// Trust a height.
     pub fn trust(&self, height: BlockHeight, header_hash: HashVal) {
-        let (t_height, t_head) = self.trusted_blocks.get(self.netid)
-            .map(|(cur_height, cur_head)|
+        let (t_height, t_head) = self
+            .trust_store
+            .get(self.netid)
+            .map(|(cur_height, cur_head)| {
                 if height > cur_height {
                     (height, header_hash)
                 } else {
                     (cur_height, cur_head)
-                })
+                }
+            })
             .or(Some((height, header_hash)))
             .expect("Trust should always return Some, this is a bug");
 
-        self.trusted_blocks.set(self.netid, t_height, t_head);
+        self.trust_store.set(self.netid, t_height, t_head);
     }
 
     /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
+    #[deprecated]
     pub async fn insecure_latest_snapshot(&self) -> melnet::Result<ValClientSnapshot> {
         self.trust_latest().await?;
         self.snapshot().await
@@ -107,6 +114,8 @@ impl<T: TrustedBlockPersister> ValClient<T> {
                 summary.height
             )));
         }
+        // automatically update trust
+        self.trust(summary.height, summary.header.hash());
         Ok(ValClientSnapshot {
             height: summary.height,
             header: summary.header,
@@ -116,8 +125,11 @@ impl<T: TrustedBlockPersister> ValClient<T> {
 
     /// Helper function to obtain the trusted staker set.
     async fn get_trusted_stakers(&self) -> melnet::Result<(BlockHeight, StakeMapping)> {
-        let (trusted_height, trusted_hash) = self.trusted_blocks.get(self.netid)
-            .ok_or(MelnetError::Custom("Expected to find a trusted block when fetching trusted stakers".into()))?;
+        let (trusted_height, trusted_hash) = self.trust_store.get(self.netid).ok_or_else(|| {
+            MelnetError::Custom(
+                "Expected to find a trusted block when fetching trusted stakers".into(),
+            )
+        })?;
 
         let temp_forest = Forest::new(InMemoryBackend::default());
         let stakers = self.raw.get_stakers_raw(trusted_height).await?;
@@ -325,7 +337,10 @@ impl NodeClient {
     }
 
     /// Gets an "abbreviated block".
-    pub async fn get_abbr_block(&self, height: BlockHeight) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
+    pub async fn get_abbr_block(
+        &self,
+        height: BlockHeight,
+    ) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
         get_abbr_block(self.clone(), height).await
     }
 
@@ -372,7 +387,10 @@ impl NodeClient {
     }
 
     /// Gets the stakers, **as the raw SMT mapping**
-    pub async fn get_stakers_raw(&self, height: BlockHeight) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>> {
+    pub async fn get_stakers_raw(
+        &self,
+        height: BlockHeight,
+    ) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>> {
         get_stakers_raw(self.clone(), height).await
     }
 }
@@ -422,6 +440,9 @@ async fn get_smt_branch(
 }
 
 #[cached::proc_macro::cached(result = true, size = 100)]
-async fn get_full_block(this: NodeClient, height: BlockHeight) -> melnet::Result<(Block, ConsensusProof)> {
+async fn get_full_block(
+    this: NodeClient,
+    height: BlockHeight,
+) -> melnet::Result<(Block, ConsensusProof)> {
     this.get_full_block(height, |_| None).await
 }
