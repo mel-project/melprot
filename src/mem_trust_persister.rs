@@ -31,6 +31,25 @@ impl TrustedBlockPersister for InMemoryTrustStore {
         self.0.write().insert(netid as u8, (height, header_hash));
     }
 
+    fn set_highest(
+        &self,
+        netid: NetID,
+        height: BlockHeight,
+        header_hash: HashVal)
+    {
+        let (t_height, t_head) = self.0.read().get(&(netid as u8))
+            .map(|(cur_height, cur_head)|
+                if height > *cur_height {
+                    (height, header_hash)
+                } else {
+                    (cur_height.clone(), cur_head.clone())
+                })
+            .or(Some((height, header_hash)))
+            .expect("Trust should always return Some, this is a bug");
+
+        self.0.write().insert(netid as u8, (t_height, t_head));
+    }
+
     fn get(&self, netid: NetID)
     -> Option<(BlockHeight, HashVal)> {
         self.0.read().get(&(netid as u8)).cloned()

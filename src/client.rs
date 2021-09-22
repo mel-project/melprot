@@ -1,9 +1,11 @@
 use std::{
     collections::BTreeMap,
     net::SocketAddr,
+    str::FromStr,
     sync::{Arc, Mutex},
 };
 
+use thiserror::Error;
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
 use serde::{de::DeserializeOwned, Serialize};
@@ -17,10 +19,43 @@ use crate::{InMemoryTrustStore, NodeRequest, StateSummary, Substate};
 
 pub type BlockHeight = u64;
 
+#[derive(Debug, Clone)]
+pub struct TrustedBlock {
+    pub height: BlockHeight,
+    pub header_hash: HashVal,
+}
+
+#[derive(Error, Debug)]
+pub enum ParseTrustedBlockError {
+    #[error("expected a ':' character to split the height and header hash")]
+    ParseSplitError,
+    #[error("height is not an integer")]
+    ParseIntError(#[from] std::num::ParseIntError),
+    #[error("failed to parse header hash as a hash")]
+    ParseHeaderHash(#[from] hex::FromHexError),
+}
+
+impl FromStr for TrustedBlock {
+    type Err = ParseTrustedBlockError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (height_str, hash_str) = s.split_once(':')
+            .ok_or(ParseTrustedBlockError::ParseSplitError)?;
+
+        let height      = BlockHeight::from_str(height_str)?;
+        let header_hash = HashVal::from_str(hash_str)?;
+
+        Ok(Self{height, header_hash})
+    }
+}
+
 /// Standard interface for persisting a trusted block.
 pub trait TrustedBlockPersister {
-    /// Store the latest trusted block in persistent storage
+    /// Set a trusted block in persistent storage, overriding the current
+    /// value if one exists.
     fn set(&self, netid: NetID, height: BlockHeight, header_hash: HashVal);
+    /// Store the latest trusted block in persistent storage only if the
+    /// new value is greater than the existing.
+    fn set_highest(&self, netid: NetID, height: BlockHeight, header_hash: HashVal);
     /// Get the latest trusted block from persistent storage if one exists.
     fn get(&self, netid: NetID) -> Option<(BlockHeight, HashVal)>;
 }
@@ -51,17 +86,7 @@ impl<T: TrustedBlockPersister> ValClient<T> {
 
     /// Trust a height.
     pub fn trust(&self, height: BlockHeight, header_hash: HashVal) {
-        let (t_height, t_head) = self.trusted_blocks.get(self.netid)
-            .map(|(cur_height, cur_head)|
-                if height > cur_height {
-                    (height, header_hash)
-                } else {
-                    (cur_height, cur_head)
-                })
-            .or(Some((height, header_hash)))
-            .expect("Trust should always return Some, this is a bug");
-
-        self.trusted_blocks.set(self.netid, t_height, t_head);
+        self.trusted_blocks.set_highest(self.netid, height, header_hash);
     }
 
     /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.

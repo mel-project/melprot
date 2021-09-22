@@ -10,6 +10,7 @@ repository = "https://github.com/themeliolabs/themelio-nodeprot"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+thiserror= "1.0"
 stdcode= "0.1.2"
 themelio-stf= "0.5"
 tmelcrypt= "0.1.0"
