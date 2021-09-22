@@ -1,34 +1,37 @@
-use tmelcrypt::HashVal;
-use acidjson::{AcidJson, AcidJsonError};
+use crate::{BlockHeight, TrustStore};
+use std::{collections::HashMap, sync::RwLock};
 use themelio_stf::NetID;
-use std::{collections::BTreeMap, path::Path};
-use crate::{BlockHeight, TrustedBlockPersister};
+use tmelcrypt::HashVal;
 
-/// File mapping from network id to latest trusted block.
-#[derive(Clone)]
-pub struct InMemoryTrustStore(AcidJson<BTreeMap<u8, (BlockHeight, HashVal)>>);
+/// In-memory trust store.
+pub struct InMemoryTrustStore {
+    inner: RwLock<HashMap<NetID, (BlockHeight, HashVal)>>,
+}
 
-impl InMemoryTrustStore {
-    /// Opens or creates a blockstore from a given filename.
-    pub fn open(path: &Path) -> Result<Self, AcidJsonError> {
-        // if not exists, create
-        if std::fs::read(path).is_err() {
-            std::fs::write(path, "{}")
-                .map_err(|e| AcidJsonError::IoError(e))?;
-        }
-        Ok(Self( AcidJson::open(path)? ))
+impl Default for InMemoryTrustStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl TrustedBlockPersister for InMemoryTrustStore {
-    // Note: Allows a latest block to be rolled back to an earlier one
-    fn set(
-        &self,
-        netid: NetID,
-        height: BlockHeight,
-        header_hash: HashVal)
-    {
-        self.0.write().insert(netid as u8, (height, header_hash));
+impl InMemoryTrustStore {
+    /// Creates a new in-memory trust store.
+    pub fn new() -> Self {
+        Self {
+            inner: Default::default(),
+        }
+    }
+}
+
+impl TrustStore for InMemoryTrustStore {
+    fn set(&self, netid: NetID, height: BlockHeight, header_hash: HashVal) {
+        let mut inner = self.inner.write().unwrap();
+        if let Some((k, _)) = inner.get(&netid) {
+            if *k >= height {
+                return;
+            }
+        }
+        inner.insert(netid, (height, header_hash));
     }
 
     fn set_highest(
@@ -37,7 +40,7 @@ impl TrustedBlockPersister for InMemoryTrustStore {
         height: BlockHeight,
         header_hash: HashVal)
     {
-        let (t_height, t_head) = self.0.read().get(&(netid as u8))
+        let (t_height, t_head) = self.inner.read().unwrap().get(&netid)
             .map(|(cur_height, cur_head)|
                 if height > *cur_height {
                     (height, header_hash)
@@ -47,12 +50,10 @@ impl TrustedBlockPersister for InMemoryTrustStore {
             .or(Some((height, header_hash)))
             .expect("Trust should always return Some, this is a bug");
 
-        self.0.write().insert(netid as u8, (t_height, t_head));
+        self.inner.write().unwrap().insert(netid, (t_height, t_head));
     }
 
-    fn get(&self, netid: NetID)
-    -> Option<(BlockHeight, HashVal)> {
-        self.0.read().get(&(netid as u8)).cloned()
+    fn get(&self, netid: NetID) -> Option<(BlockHeight, HashVal)> {
+        self.inner.read().unwrap().get(&netid).cloned()
     }
 }
-
