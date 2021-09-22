@@ -1,11 +1,12 @@
 use crate::{BlockHeight, TrustStore};
-use std::{collections::HashMap, sync::RwLock};
+use std::{collections::HashMap, sync::RwLock, sync::Arc};
 use themelio_stf::NetID;
 use tmelcrypt::HashVal;
 
 /// In-memory trust store.
+#[derive(Clone)]
 pub struct InMemoryTrustStore {
-    inner: RwLock<HashMap<NetID, (BlockHeight, HashVal)>>,
+    inner: Arc<RwLock<HashMap<NetID, (BlockHeight, HashVal)>>>,
 }
 
 impl Default for InMemoryTrustStore {
