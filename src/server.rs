@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use melnet::Request;
 use novasmt::CompressedProof;
-use themelio_stf::{AbbrBlock, ConsensusProof, SealedState, Transaction};
+use themelio_stf::{AbbrBlock, BlockHeight, ConsensusProof, SealedState, Transaction};
 use tmelcrypt::HashVal;
 
 use crate::{NodeRequest, StateSummary, Substate};
@@ -13,24 +13,24 @@ pub trait NodeServer: Send + Sync {
     fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> melnet::Result<()>;
 
     /// Gets an "abbreviated block"
-    fn get_abbr_block(&self, height: u64) -> melnet::Result<(AbbrBlock, ConsensusProof)>;
+    fn get_abbr_block(&self, height: BlockHeight) -> melnet::Result<(AbbrBlock, ConsensusProof)>;
 
     /// Gets a state summary
     fn get_summary(&self) -> melnet::Result<StateSummary>;
 
     /// Gets a full state
-    fn get_state(&self, height: u64) -> melnet::Result<SealedState>;
+    fn get_state(&self, height: BlockHeight) -> melnet::Result<SealedState>;
 
     /// Gets an SMT branch
     fn get_smt_branch(
         &self,
-        height: u64,
+        height: BlockHeight,
         elem: Substate,
         key: HashVal,
     ) -> melnet::Result<(Vec<u8>, CompressedProof)>;
 
     /// Gets stakers
-    fn get_stakers_raw(&self, height: u64) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>>;
+    fn get_stakers_raw(&self, height: BlockHeight) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>>;
 }
 
 /// This is a melnet responder that wraps a NodeServer.

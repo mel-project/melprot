@@ -1,24 +1,57 @@
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{collections::BTreeMap, net::SocketAddr, str::FromStr};
 
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
 use serde::{de::DeserializeOwned, Serialize};
 use themelio_stf::{
-    AbbrBlock, Block, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey, PoolState,
-    SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash, STAKE_EPOCH,
+    AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey,
+    PoolState, SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash,
 };
+use thiserror::Error;
 use tmelcrypt::HashVal;
 
 use crate::{InMemoryTrustStore, NodeRequest, StateSummary, Substate};
 
-pub type BlockHeight = u64;
+#[derive(Debug, Clone)]
+pub struct TrustedHeight {
+    pub height: BlockHeight,
+    pub header_hash: HashVal,
+}
+
+#[derive(Error, Debug)]
+pub enum ParseTrustedHeightError {
+    #[error("expected a ':' character to split the height and header hash")]
+    ParseSplitError,
+    #[error("height is not an integer")]
+    ParseIntError(#[from] std::num::ParseIntError),
+    #[error("failed to parse header hash as a hash")]
+    ParseHeaderHash(#[from] hex::FromHexError),
+}
+
+impl FromStr for TrustedHeight {
+    type Err = ParseTrustedHeightError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (height_str, hash_str) = s
+            .split_once(':')
+            .ok_or(ParseTrustedHeightError::ParseSplitError)?;
+
+        let height = BlockHeight::from_str(height_str)?;
+        let header_hash = HashVal::from_str(hash_str)?;
+
+        Ok(Self {
+            height,
+            header_hash,
+        })
+    }
+}
 
 /// Standard interface for persisting a trusted block.
 pub trait TrustStore {
-    /// Store the latest trusted block in persistent storage
-    fn set(&self, netid: NetID, height: BlockHeight, header_hash: HashVal);
+    /// Set a trusted block in persistent storage, overriding the current
+    /// value only if this one has a higher block height.
+    fn set(&self, netid: NetID, trusted: TrustedHeight);
     /// Get the latest trusted block from persistent storage if one exists.
-    fn get(&self, netid: NetID) -> Option<(BlockHeight, HashVal)>;
+    fn get(&self, netid: NetID) -> Option<TrustedHeight>;
 }
 
 /// A higher-level client that validates all information.
@@ -53,21 +86,8 @@ impl<T: TrustStore> ValClient<T> {
     }
 
     /// Trust a height.
-    pub fn trust(&self, height: BlockHeight, header_hash: HashVal) {
-        let (t_height, t_head) = self
-            .trust_store
-            .get(self.netid)
-            .map(|(cur_height, cur_head)| {
-                if height > cur_height {
-                    (height, header_hash)
-                } else {
-                    (cur_height, cur_head)
-                }
-            })
-            .or(Some((height, header_hash)))
-            .expect("Trust should always return Some, this is a bug");
-
-        self.trust_store.set(self.netid, t_height, t_head);
+    pub fn trust(&self, trusted: TrustedHeight) {
+        self.trust_store.set(self.netid, trusted);
     }
 
     /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
@@ -80,7 +100,10 @@ impl<T: TrustStore> ValClient<T> {
     // trust latest height
     async fn trust_latest(&self) -> melnet::Result<()> {
         let summary = self.raw.get_summary().await?;
-        self.trust(summary.height, summary.header.hash());
+        self.trust(TrustedHeight {
+            height: summary.height,
+            header_hash: summary.header.hash(),
+        });
         Ok(())
     }
 
@@ -88,14 +111,14 @@ impl<T: TrustStore> ValClient<T> {
     pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
         let summary = self.raw.get_summary().await?;
         let (height, stakers) = self.get_trusted_stakers().await?;
-        if summary.height / STAKE_EPOCH > height / STAKE_EPOCH + 1 {
+        if summary.height.epoch() > height.epoch() + 1 {
             // TODO: Is this the correct condition?
             return Err(MelnetError::Custom(format!(
                 "trusted height {} in epoch {} but remote height {} in epoch {}",
                 height,
-                height / STAKE_EPOCH,
+                height.epoch(),
                 summary.height,
-                summary.height / STAKE_EPOCH
+                summary.height.epoch()
             )));
         }
         // we use the stakers to validate the latest summary
@@ -103,7 +126,7 @@ impl<T: TrustStore> ValClient<T> {
         for doc in stakers.val_iter() {
             if let Some(sig) = summary.proof.get(&doc.pubkey) {
                 if doc.pubkey.verify(&summary.header.hash(), sig) {
-                    total_votes += stakers.vote_power(summary.height / STAKE_EPOCH, doc.pubkey);
+                    total_votes += stakers.vote_power(summary.height.epoch(), doc.pubkey);
                 }
             }
         }
@@ -115,7 +138,10 @@ impl<T: TrustStore> ValClient<T> {
             )));
         }
         // automatically update trust
-        self.trust(summary.height, summary.header.hash());
+        self.trust(TrustedHeight {
+            height: summary.height,
+            header_hash: summary.header.hash(),
+        });
         Ok(ValClientSnapshot {
             height: summary.height,
             header: summary.header,
@@ -125,17 +151,17 @@ impl<T: TrustStore> ValClient<T> {
 
     /// Helper function to obtain the trusted staker set.
     async fn get_trusted_stakers(&self) -> melnet::Result<(BlockHeight, StakeMapping)> {
-        let (trusted_height, trusted_hash) = self.trust_store.get(self.netid).ok_or_else(|| {
+        let checkpoint = self.trust_store.get(self.netid).ok_or_else(|| {
             MelnetError::Custom(
                 "Expected to find a trusted block when fetching trusted stakers".into(),
             )
         })?;
 
         let temp_forest = Forest::new(InMemoryBackend::default());
-        let stakers = self.raw.get_stakers_raw(trusted_height).await?;
+        let stakers = self.raw.get_stakers_raw(checkpoint.height).await?;
         // first obtain trusted SMT branch
-        let (abbr_block, _) = self.raw.get_abbr_block(trusted_height).await?;
-        if abbr_block.header.hash() != trusted_hash {
+        let (abbr_block, _) = self.raw.get_abbr_block(checkpoint.height).await?;
+        if abbr_block.header.hash() != checkpoint.header_hash {
             return Err(MelnetError::Custom(
                 "remote block contradicted trusted block hash".into(),
             ));
@@ -150,7 +176,7 @@ impl<T: TrustStore> ValClient<T> {
                 "remote staker set contradicted valid header".into(),
             ));
         }
-        Ok((trusted_height, SmtMapping::new(mapping)))
+        Ok((checkpoint.height, SmtMapping::new(mapping)))
     }
 }
 
@@ -236,7 +262,7 @@ impl ValClientSnapshot {
                 }));
         }
         // Okay, so that didn't really work. That means that if the CDH does exist, it's in the previous block's coin mapping.
-        self.get_older(self.height.saturating_sub(1))
+        self.get_older(self.height.0.saturating_sub(1).into())
             .await?
             .get_coin(coinid)
             .await
@@ -310,10 +336,10 @@ impl NodeClient {
     /// Creates as new NodeClient
     pub fn new(netid: NetID, remote: SocketAddr) -> Self {
         let netname = match netid {
-            NetID::Mainnet => "mainnet-node",
-            NetID::Testnet => "testnet-node",
-        }
-        .to_string();
+            NetID::Mainnet => "mainnet-node".to_string(),
+            NetID::Testnet => "testnet-node".to_string(),
+            _ => format!("{:?}", netid),
+        };
         Self { remote, netname }
     }
 
