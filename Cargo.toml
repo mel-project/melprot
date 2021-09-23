@@ -1,6 +1,6 @@
 [package]
 name = "themelio-nodeprot"
-version = "0.4.2-alpha.0"
+version = "0.5.0-alpha.0"
 authors = ["Themelio Labs"]
 edition = "2018"
 
@@ -12,7 +12,7 @@ repository = "https://github.com/themeliolabs/themelio-nodeprot"
 [dependencies]
 thiserror= "1.0"
 stdcode= "0.1.2"
-themelio-stf= "0.5"
+themelio-stf= "0.6"
 tmelcrypt= "0.1.0"
 melnet= "0.1.0"
 # acidjson= "0.1.0"

@@ -1,5 +1,5 @@
 use crate::{BlockHeight, TrustStore};
-use std::{collections::HashMap, sync::RwLock, sync::Arc};
+use std::{collections::HashMap, sync::Arc, sync::RwLock};
 use themelio_stf::NetID;
 use tmelcrypt::HashVal;
 
@@ -35,23 +35,26 @@ impl TrustStore for InMemoryTrustStore {
         inner.insert(netid, (height, header_hash));
     }
 
-    fn set_highest(
-        &self,
-        netid: NetID,
-        height: BlockHeight,
-        header_hash: HashVal)
-    {
-        let (t_height, t_head) = self.inner.read().unwrap().get(&netid)
-            .map(|(cur_height, cur_head)|
+    fn set_highest(&self, netid: NetID, height: BlockHeight, header_hash: HashVal) {
+        let (t_height, t_head) = self
+            .inner
+            .read()
+            .unwrap()
+            .get(&netid)
+            .map(|(cur_height, cur_head)| {
                 if height > *cur_height {
                     (height, header_hash)
                 } else {
-                    (cur_height.clone(), cur_head.clone())
-                })
+                    (*cur_height, *cur_head)
+                }
+            })
             .or(Some((height, header_hash)))
             .expect("Trust should always return Some, this is a bug");
 
-        self.inner.write().unwrap().insert(netid, (t_height, t_head));
+        self.inner
+            .write()
+            .unwrap()
+            .insert(netid, (t_height, t_head));
     }
 
     fn get(&self, netid: NetID) -> Option<(BlockHeight, HashVal)> {

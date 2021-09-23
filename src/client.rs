@@ -1,22 +1,16 @@
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    str::FromStr,
-};
+use std::{collections::BTreeMap, net::SocketAddr, str::FromStr};
 
-use thiserror::Error;
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
 use serde::{de::DeserializeOwned, Serialize};
 use themelio_stf::{
-    AbbrBlock, Block, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey, PoolState,
-    SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash, STAKE_EPOCH,
+    AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey,
+    PoolState, SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash,
 };
+use thiserror::Error;
 use tmelcrypt::HashVal;
 
 use crate::{InMemoryTrustStore, NodeRequest, StateSummary, Substate};
-
-pub type BlockHeight = u64;
 
 #[derive(Debug, Clone)]
 pub struct TrustedBlock {
@@ -37,13 +31,17 @@ pub enum ParseTrustedBlockError {
 impl FromStr for TrustedBlock {
     type Err = ParseTrustedBlockError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (height_str, hash_str) = s.split_once(':')
+        let (height_str, hash_str) = s
+            .split_once(':')
             .ok_or(ParseTrustedBlockError::ParseSplitError)?;
 
-        let height      = BlockHeight::from_str(height_str)?;
+        let height = BlockHeight::from_str(height_str)?;
         let header_hash = HashVal::from_str(hash_str)?;
 
-        Ok(Self{height, header_hash})
+        Ok(Self {
+            height,
+            header_hash,
+        })
     }
 }
 
@@ -92,7 +90,8 @@ impl<T: TrustStore> ValClient<T> {
 
     /// Trust a height.
     pub fn trust(&self, height: BlockHeight, header_hash: HashVal) {
-        self.trust_store.set_highest(self.netid, height, header_hash);
+        self.trust_store
+            .set_highest(self.netid, height, header_hash);
     }
 
     /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
@@ -113,14 +112,14 @@ impl<T: TrustStore> ValClient<T> {
     pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
         let summary = self.raw.get_summary().await?;
         let (height, stakers) = self.get_trusted_stakers().await?;
-        if summary.height / STAKE_EPOCH > height / STAKE_EPOCH + 1 {
+        if summary.height.epoch() > height.epoch() + 1 {
             // TODO: Is this the correct condition?
             return Err(MelnetError::Custom(format!(
                 "trusted height {} in epoch {} but remote height {} in epoch {}",
                 height,
-                height / STAKE_EPOCH,
+                height.epoch(),
                 summary.height,
-                summary.height / STAKE_EPOCH
+                summary.height.epoch()
             )));
         }
         // we use the stakers to validate the latest summary
@@ -128,7 +127,7 @@ impl<T: TrustStore> ValClient<T> {
         for doc in stakers.val_iter() {
             if let Some(sig) = summary.proof.get(&doc.pubkey) {
                 if doc.pubkey.verify(&summary.header.hash(), sig) {
-                    total_votes += stakers.vote_power(summary.height / STAKE_EPOCH, doc.pubkey);
+                    total_votes += stakers.vote_power(summary.height.epoch(), doc.pubkey);
                 }
             }
         }
@@ -261,7 +260,7 @@ impl ValClientSnapshot {
                 }));
         }
         // Okay, so that didn't really work. That means that if the CDH does exist, it's in the previous block's coin mapping.
-        self.get_older(self.height.saturating_sub(1))
+        self.get_older(self.height.0.saturating_sub(1).into())
             .await?
             .get_coin(coinid)
             .await
@@ -335,10 +334,10 @@ impl NodeClient {
     /// Creates as new NodeClient
     pub fn new(netid: NetID, remote: SocketAddr) -> Self {
         let netname = match netid {
-            NetID::Mainnet => "mainnet-node",
-            NetID::Testnet => "testnet-node",
-        }
-        .to_string();
+            NetID::Mainnet => "mainnet-node".to_string(),
+            NetID::Testnet => "testnet-node".to_string(),
+            _ => format!("{:?}", netid),
+        };
         Self { remote, netname }
     }
 

@@ -1,19 +1,19 @@
 mod client;
-mod server;
 mod mem_trust_persister;
+mod server;
 
 pub use client::*;
-pub use server::*;
 pub use mem_trust_persister::*;
+pub use server::*;
 
 use serde::{Deserialize, Serialize};
-use themelio_stf::{ConsensusProof, Header, NetID, Transaction, TxHash};
+use themelio_stf::{BlockHeight, ConsensusProof, Header, NetID, Transaction, TxHash};
 use tmelcrypt::HashVal;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSummary {
     pub netid: NetID,
-    pub height: u64,
+    pub height: BlockHeight,
     pub header: Header,
     pub proof: ConsensusProof,
 }
@@ -30,9 +30,9 @@ pub enum Substate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeRequest {
     SendTx(Transaction),
-    GetAbbrBlock(u64),
+    GetAbbrBlock(BlockHeight),
     GetSummary,
-    GetSmtBranch(u64, Substate, HashVal),
-    GetStakersRaw(u64),
-    GetPartialBlock(u64, Vec<TxHash>),
+    GetSmtBranch(BlockHeight, Substate, HashVal),
+    GetStakersRaw(BlockHeight),
+    GetPartialBlock(BlockHeight, Vec<TxHash>),
 }
