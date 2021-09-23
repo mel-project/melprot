@@ -1,9 +1,9 @@
 mod client;
-mod mem_trust_persister;
+mod inmemory_truststore;
 mod server;
 
 pub use client::*;
-pub use mem_trust_persister::*;
+pub use inmemory_truststore::*;
 pub use server::*;
 
 use serde::{Deserialize, Serialize};
