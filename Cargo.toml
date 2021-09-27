@@ -1,6 +1,6 @@
 [package]
 name = "themelio-nodeprot"
-version = "0.4.2-alpha.0"
+version = "0.5.1-alpha.0"
 authors = ["Themelio Labs"]
 edition = "2018"
 
@@ -10,10 +10,12 @@ repository = "https://github.com/themeliolabs/themelio-nodeprot"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+thiserror= "1.0"
 stdcode= "0.1.2"
-themelio-stf= "0.5"
+themelio-stf= "0.6"
 tmelcrypt= "0.1.0"
 melnet= "0.1.0"
+# acidjson= "0.1.0"
 serde={ version = "1.0.126", features = ["derive"] }
 
 novasmt= "0.1.9"
