@@ -183,6 +183,19 @@ impl ValClientSnapshot {
         Ok(block)
     }
 
+    /// Gets the whole block at this height, with a function that gets cached transactions.
+    pub async fn current_block_with_known(
+        &self,
+        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
+    ) -> melnet::Result<Block> {
+        let header = self.current_header();
+        let (block, _) = self.raw.get_full_block(header.height, get_known_tx).await?;
+        if block.header != header {
+            return Err(MelnetError::Custom("block header does not match".into()));
+        }
+        Ok(block)
+    }
+
     /// Gets a historical header.
     pub async fn get_history(&self, height: u64) -> melnet::Result<Option<Header>> {
         self.get_smt_value_serde(Substate::History, height).await
