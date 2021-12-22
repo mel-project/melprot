@@ -133,8 +133,8 @@ impl<T: TrustStore> ValClient<T> {
 
         if total_votes < 0.7 {
             return Err(MelnetError::Custom(format!(
-                "remote height {} has insufficient votes",
-                summary.height
+                "remote height {} has insufficient votes (total_votes = {}, stakers = {:?})",
+                summary.height, total_votes, stakers
             )));
         }
         // automatically update trust
