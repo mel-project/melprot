@@ -126,8 +126,7 @@ impl<T: TrustStore> ValClient<T> {
         {
             // to cross the epoch, we must obtain the epoch-terminal snapshot first.
             // this places the correct thing in the cache, which then lets this one verify too.
-            let epoch_ending_height =
-                BlockHeight(safe_height.0 / STAKE_EPOCH * safe_height.epoch() + STAKE_EPOCH - 1);
+            let epoch_ending_height = BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
             let (ending_abbr_block, ending_cproof) =
                 self.raw.get_abbr_block(epoch_ending_height).await?;
             log::warn!(
