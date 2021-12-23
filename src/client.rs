@@ -5,7 +5,7 @@ use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
 use serde::{de::DeserializeOwned, Serialize};
 use themelio_stf::{
     AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey,
-    PoolState, SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash,
+    PoolState, SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::HashVal;
@@ -109,24 +109,42 @@ impl<T: TrustStore> ValClient<T> {
 
     /// Obtains a validated snapshot based on what height was trusted.
     pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
-        let summary = self.raw.get_summary().await?;
-        let (height, stakers) = self.get_trusted_stakers().await?;
-        if summary.height.epoch() > height.epoch() + 1 {
+        let mut summary = self.raw.get_summary().await?;
+        let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
+        if summary.height.epoch() > safe_height.epoch() + 1 {
             // TODO: Is this the correct condition?
             return Err(MelnetError::Custom(format!(
                 "trusted height {} in epoch {} but remote height {} in epoch {}",
-                height,
-                height.epoch(),
+                safe_height,
+                safe_height.epoch(),
                 summary.height,
                 summary.height.epoch()
             )));
         }
+        if summary.height.epoch() > safe_height.epoch()
+            && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
+        {
+            // to cross the epoch, we must obtain the epoch-terminal snapshot first.
+            // this places the correct thing in the cache, which then lets this one verify too.
+            let epoch_ending_height =
+                BlockHeight(safe_height.0 / STAKE_EPOCH * safe_height.epoch() + STAKE_EPOCH - 1);
+            let (ending_abbr_block, ending_cproof) =
+                self.raw.get_abbr_block(epoch_ending_height).await?;
+            log::warn!(
+                "fast-forwarding proof from {} to {}",
+                safe_height,
+                epoch_ending_height
+            );
+            summary.height = epoch_ending_height;
+            summary.header = ending_abbr_block.header;
+            summary.proof = ending_cproof;
+        }
         // we use the stakers to validate the latest summary
         let mut total_votes = 0.0;
-        for doc in stakers.val_iter() {
+        for doc in safe_stakers.val_iter() {
             if let Some(sig) = summary.proof.get(&doc.pubkey) {
                 if doc.pubkey.verify(&summary.header.hash(), sig) {
-                    total_votes += stakers.vote_power(summary.height.epoch(), doc.pubkey);
+                    total_votes += safe_stakers.vote_power(summary.height.epoch(), doc.pubkey);
                 }
             }
         }
@@ -136,7 +154,7 @@ impl<T: TrustStore> ValClient<T> {
                 "remote height {} has insufficient votes (total_votes = {}, stakers = {:?})",
                 summary.height,
                 total_votes,
-                stakers.val_iter().collect::<Vec<_>>()
+                safe_stakers.val_iter().collect::<Vec<_>>()
             )));
         }
         // automatically update trust
