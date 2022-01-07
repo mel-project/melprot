@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, net::SocketAddr, str::FromStr};
 
 use melnet::MelnetError;
-use novasmt::{CompressedProof, Forest, FullProof, InMemoryBackend};
+use novasmt::{CompressedProof, Database, FullProof, InMemoryCas};
 use serde::{de::DeserializeOwned, Serialize};
 use themelio_stf::{
     AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey,
@@ -169,14 +169,16 @@ impl<T: TrustStore> ValClient<T> {
     }
 
     /// Helper function to obtain the trusted staker set.
-    async fn get_trusted_stakers(&self) -> melnet::Result<(BlockHeight, StakeMapping)> {
+    async fn get_trusted_stakers(
+        &self,
+    ) -> melnet::Result<(BlockHeight, StakeMapping<InMemoryCas>)> {
         let checkpoint = self.trust_store.get(self.netid).ok_or_else(|| {
             MelnetError::Custom(
                 "Expected to find a trusted block when fetching trusted stakers".into(),
             )
         })?;
 
-        let temp_forest = Forest::new(InMemoryBackend::default());
+        let temp_forest = Database::new(InMemoryCas::default());
         let stakers = self.raw.get_stakers_raw(checkpoint.height).await?;
         // first obtain trusted SMT branch
         let (abbr_block, _) = self.raw.get_abbr_block(checkpoint.height).await?;
@@ -186,9 +188,9 @@ impl<T: TrustStore> ValClient<T> {
             ));
         }
         let trusted_stake_hash = abbr_block.header.stakes_hash;
-        let mut mapping = temp_forest.open_tree(Default::default()).unwrap();
+        let mut mapping = temp_forest.get_tree(Default::default()).unwrap();
         for (k, v) in stakers {
-            mapping.insert(k.0, v.into());
+            mapping.insert(k.0, &v);
         }
         if mapping.root_hash() != trusted_stake_hash.0 {
             return Err(MelnetError::Custom(

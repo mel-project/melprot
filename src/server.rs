@@ -1,14 +1,14 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 
 use melnet::Request;
-use novasmt::CompressedProof;
+use novasmt::{CompressedProof, ContentAddrStore};
 use themelio_stf::{AbbrBlock, BlockHeight, ConsensusProof, SealedState, Transaction};
 use tmelcrypt::HashVal;
 
 use crate::{NodeRequest, StateSummary, Substate};
 
 /// This trait represents a server of Themelio's node protocol. Actual nodes should implement this.
-pub trait NodeServer: Send + Sync {
+pub trait NodeServer<C: ContentAddrStore>: Send + Sync {
     /// Broadcasts a transaction to the network
     fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> melnet::Result<()>;
 
@@ -19,7 +19,7 @@ pub trait NodeServer: Send + Sync {
     fn get_summary(&self) -> melnet::Result<StateSummary>;
 
     /// Gets a full state
-    fn get_state(&self, height: BlockHeight) -> melnet::Result<SealedState>;
+    fn get_state(&self, height: BlockHeight) -> melnet::Result<SealedState<C>>;
 
     /// Gets an SMT branch
     fn get_smt_branch(
@@ -34,20 +34,24 @@ pub trait NodeServer: Send + Sync {
 }
 
 /// This is a melnet responder that wraps a NodeServer.
-pub struct NodeResponder<S: NodeServer + 'static> {
+pub struct NodeResponder<C: ContentAddrStore, S: NodeServer<C> + 'static> {
     server: Arc<S>,
+    _p: PhantomData<C>,
 }
 
-impl<S: NodeServer> NodeResponder<S> {
+impl<C: ContentAddrStore, S: NodeServer<C>> NodeResponder<C, S> {
     /// Creates a new NodeResponder from something that implements NodeServer.
     pub fn new(server: S) -> Self {
         Self {
             server: Arc::new(server),
+            _p: Default::default(),
         }
     }
 }
 
-impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> {
+impl<C: ContentAddrStore, S: NodeServer<C>> melnet::Endpoint<NodeRequest, Vec<u8>>
+    for NodeResponder<C, S>
+{
     fn respond(&self, req: Request<NodeRequest, Vec<u8>>) {
         let state = req.state.clone();
         match req.body.clone() {
