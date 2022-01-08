@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, net::SocketAddr, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashSet},
+    net::SocketAddr,
+    str::FromStr,
+};
 
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Database, FullProof, InMemoryCas};
@@ -421,9 +425,17 @@ impl NodeClient {
             }
         }
         // send off a request
-        let req = NodeRequest::GetPartialBlock(height, unknown);
-        let mut response: Block = stdcode::deserialize(&self.request(req).await?)
-            .map_err(|e| melnet::MelnetError::Custom(e.to_string()))?;
+        let mut response: Block = if unknown.is_empty() {
+            Block {
+                header: abbr.header,
+                transactions: HashSet::new(),
+                proposer_action: abbr.proposer_action,
+            }
+        } else {
+            let req = NodeRequest::GetPartialBlock(height, unknown);
+            stdcode::deserialize(&self.request(req).await?)
+                .map_err(|e| melnet::MelnetError::Custom(e.to_string()))?
+        };
         for known in known {
             response.transactions.insert(known);
         }
