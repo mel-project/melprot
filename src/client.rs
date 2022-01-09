@@ -467,7 +467,7 @@ impl NodeClient {
     }
 }
 
-#[cached::proc_macro::cached(result = true, size = 1000)]
+// #[cached::proc_macro::cached(result = true, size = 1000)]
 async fn get_stakers_raw(
     this: NodeClient,
     height: BlockHeight,
@@ -476,7 +476,7 @@ async fn get_stakers_raw(
         .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
 }
 
-#[cached::proc_macro::cached(result = true, size = 1000)]
+// #[cached::proc_macro::cached(result = true, size = 1000)]
 async fn get_abbr_block(
     this: NodeClient,
     height: BlockHeight,
@@ -485,13 +485,13 @@ async fn get_abbr_block(
         .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
 }
 
-#[cached::proc_macro::cached(result = true, time = 5, size = 1)]
+// #[cached::proc_macro::cached(result = true, time = 5, size = 1)]
 async fn get_summary(this: NodeClient) -> melnet::Result<StateSummary> {
     stdcode::deserialize(&this.request(NodeRequest::GetSummary).await?)
         .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
 }
 
-#[cached::proc_macro::cached(result = true, size = 10000)]
+// #[cached::proc_macro::cached(result = true, size = 10000)]
 async fn get_smt_branch(
     this: NodeClient,
     height: BlockHeight,
@@ -511,7 +511,7 @@ async fn get_smt_branch(
     Ok((tuple.0, decompressed))
 }
 
-#[cached::proc_macro::cached(result = true, size = 100)]
+// #[cached::proc_macro::cached(result = true, size = 100)]
 async fn get_full_block(
     this: NodeClient,
     height: BlockHeight,

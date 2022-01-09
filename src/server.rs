@@ -15,6 +15,8 @@ pub trait NodeServer<C: ContentAddrStore>: Send + Sync {
     /// Gets an "abbreviated block"
     fn get_abbr_block(&self, height: BlockHeight) -> melnet::Result<(AbbrBlock, ConsensusProof)>;
 
+    /// Gets abbreviated blocks within a large rang
+
     /// Gets a state summary
     fn get_summary(&self) -> melnet::Result<StateSummary>;
 
@@ -82,16 +84,13 @@ impl<C: ContentAddrStore, S: NodeServer<C>> melnet::Endpoint<NodeRequest, Vec<u8
                 let server = self.server.clone();
                 hvv.sort();
                 let hvv = hvv;
-                smolscale::spawn(async move {
-                    let res = server.get_state(height).map(|ss| {
-                        let mut blk = ss.to_block();
-                        blk.transactions
-                            .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
-                        stdcode::serialize(&blk).unwrap()
-                    });
-                    req.response.send(res)
-                })
-                .detach();
+                let res = server.get_state(height).map(|ss| {
+                    let mut blk = ss.to_block();
+                    blk.transactions
+                        .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
+                    stdcode::serialize(&blk).unwrap()
+                });
+                req.response.send(res);
             }
         }
     }
