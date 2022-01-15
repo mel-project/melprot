@@ -1,13 +1,15 @@
 mod client;
 mod inmemory_truststore;
+#[cfg(feature = "server")]
 mod server;
 
 pub use client::*;
 pub use inmemory_truststore::*;
+#[cfg(feature = "server")]
 pub use server::*;
 
 use serde::{Deserialize, Serialize};
-use themelio_stf::{BlockHeight, ConsensusProof, Header, NetID, Transaction, TxHash};
+use themelio_structs::{BlockHeight, ConsensusProof, Header, NetID, Transaction, TxHash};
 use tmelcrypt::HashVal;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

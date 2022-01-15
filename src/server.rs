@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 use async_trait::async_trait;
 use melnet::Request;
 use novasmt::{CompressedProof, ContentAddrStore};
-use themelio_stf::{AbbrBlock, BlockHeight, ConsensusProof, SealedState, Transaction};
+use themelio_stf::SealedState;
+use themelio_structs::{AbbrBlock, BlockHeight, ConsensusProof, Transaction};
 use tmelcrypt::HashVal;
 
 use crate::{NodeRequest, StateSummary, Substate};

@@ -7,9 +7,10 @@ use std::{
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Database, FullProof, InMemoryCas};
 use serde::{de::DeserializeOwned, Serialize};
-use themelio_stf::{
-    AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID, PoolKey,
-    PoolState, SmtMapping, StakeDoc, StakeMapping, Transaction, TxHash, STAKE_EPOCH,
+use themelio_stf::{PoolKey, SmtMapping, StakeMapping};
+use themelio_structs::{
+    AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID,
+    PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::HashVal;

@@ -1,6 +1,7 @@
+use themelio_structs::NetID;
+
 use crate::{TrustStore, TrustedHeight};
 use std::{collections::HashMap, sync::Arc, sync::RwLock};
-use themelio_stf::NetID;
 
 /// In-memory trust store.
 #[derive(Clone)]
