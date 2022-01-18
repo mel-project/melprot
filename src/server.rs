@@ -67,7 +67,7 @@ impl<C: ContentAddrStore, S: NodeServer<C>> melnet::Endpoint<NodeRequest, Vec<u8
     async fn respond(&self, req: Request<NodeRequest>) -> anyhow::Result<Vec<u8>> {
         let state = req.state.clone();
         let server = self.server.clone();
-        smol::unblock(move || match req.body.clone() {
+        match req.body {
             NodeRequest::SendTx(tx) => {
                 server.send_tx(state, tx)?;
                 Ok(vec![])
@@ -91,7 +91,6 @@ impl<C: ContentAddrStore, S: NodeServer<C>> melnet::Endpoint<NodeRequest, Vec<u8
                     .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
                 Ok(stdcode::serialize(&blk)?)
             }
-        })
-        .await
+        }
     }
 }
