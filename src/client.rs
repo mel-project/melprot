@@ -1,12 +1,13 @@
+use derivative::Derivative;
+use melnet::MelnetError;
+use novasmt::{CompressedProof, Database, FullProof, InMemoryCas};
+use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
     net::SocketAddr,
     str::FromStr,
+    sync::Arc,
 };
-
-use melnet::MelnetError;
-use novasmt::{CompressedProof, Database, FullProof, InMemoryCas};
-use serde::{de::DeserializeOwned, Serialize};
 use themelio_stf::{PoolKey, SmtMapping, StakeMapping};
 use themelio_structs::{
     AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID,
@@ -15,7 +16,7 @@ use themelio_structs::{
 use thiserror::Error;
 use tmelcrypt::HashVal;
 
-use crate::{InMemoryTrustStore, NodeRequest, StateSummary, Substate};
+use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRequest, StateSummary, Substate};
 
 #[derive(Debug, Clone)]
 pub struct TrustedHeight {
@@ -60,11 +61,14 @@ pub trait TrustStore {
 }
 
 /// A higher-level client that validates all information.
-#[derive(Debug, Clone)]
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
 pub struct ValClient<T = InMemoryTrustStore> {
     netid: NetID,
     raw: NodeClient,
     trust_store: T,
+    #[derivative(Debug = "ignore")]
+    cache: Arc<AsyncCache>,
 }
 
 impl ValClient<InMemoryTrustStore> {
@@ -82,6 +86,7 @@ impl<T: TrustStore> ValClient<T> {
             netid,
             raw,
             trust_store,
+            cache: Arc::new(AsyncCache::new(10000)),
         }
     }
 
@@ -170,6 +175,7 @@ impl<T: TrustStore> ValClient<T> {
             height: summary.height,
             header: summary.header,
             raw: self.raw.clone(),
+            cache: self.cache.clone(),
         })
     }
 
@@ -212,6 +218,7 @@ pub struct ValClientSnapshot {
     height: BlockHeight,
     header: Header,
     raw: NodeClient,
+    cache: Arc<AsyncCache>,
 }
 
 impl ValClientSnapshot {
@@ -229,20 +236,28 @@ impl ValClientSnapshot {
             return Ok(self.clone());
         }
         // Get an SMT branch
-        let val = self
-            .get_smt_value(
-                Substate::History,
-                tmelcrypt::hash_single(&stdcode::serialize(&old_height).unwrap()),
-            )
+        let old_elem: Header = self
+            .cache
+            .get_or_try_fill(("header", old_height), async {
+                let val = self
+                    .get_smt_value(
+                        Substate::History,
+                        tmelcrypt::hash_single(&stdcode::serialize(&old_height).unwrap()),
+                    )
+                    .await?;
+                let old_elem: Header = stdcode::deserialize(&val).map_err(|e| {
+                    MelnetError::Custom(format!("could not deserialize old header: {}", e))
+                })?;
+                Ok::<_, melnet::MelnetError>(old_elem)
+            })
             .await?;
-        let old_elem: Header = stdcode::deserialize(&val)
-            .map_err(|e| MelnetError::Custom(format!("could not deserialize old header: {}", e)))?;
         // this can never possibly be bad unless everything is horribly untrustworthy
         assert_eq!(old_elem.height, old_height);
         Ok(Self {
             height: old_height,
             header: old_elem,
             raw: self.raw.clone(),
+            cache: self.cache.clone(),
         })
     }
 
@@ -253,12 +268,16 @@ impl ValClientSnapshot {
 
     /// Gets the whole block at this height.
     pub async fn current_block(&self) -> melnet::Result<Block> {
-        let header = self.current_header();
-        let (block, _) = get_full_block(self.raw.clone(), self.height).await?;
-        if block.header != header {
-            return Err(MelnetError::Custom("block header does not match".into()));
-        }
-        Ok(block)
+        self.cache
+            .get_or_try_fill(("block", self.height), async {
+                let header = self.current_header();
+                let (block, _) = get_full_block(self.raw.clone(), self.height).await?;
+                if block.header != header {
+                    return Err(MelnetError::Custom("block header does not match".into()));
+                }
+                Ok(block)
+            })
+            .await
     }
 
     /// Gets the whole block at this height, with a function that gets cached transactions.
@@ -325,23 +344,27 @@ impl ValClientSnapshot {
     }
 
     /// Helper for serde.
-    async fn get_smt_value_serde<S: Serialize, D: DeserializeOwned>(
+    async fn get_smt_value_serde<S: Serialize, D: DeserializeOwned + Serialize>(
         &self,
         substate: Substate,
         key: S,
     ) -> melnet::Result<Option<D>> {
-        let val = self
-            .get_smt_value(
-                substate,
-                tmelcrypt::hash_single(&stdcode::serialize(&key).unwrap()),
-            )
-            .await?;
-        if val.is_empty() {
-            return Ok(None);
-        }
-        let val = stdcode::deserialize(&val)
-            .map_err(|_| MelnetError::Custom("fatal deserialization error".into()))?;
-        Ok(Some(val))
+        self.cache
+            .get_or_try_fill((self.height, substate, &key), async {
+                let val = self
+                    .get_smt_value(
+                        substate,
+                        tmelcrypt::hash_single(&stdcode::serialize(&key).unwrap()),
+                    )
+                    .await?;
+                if val.is_empty() {
+                    return Ok(None);
+                }
+                let val = stdcode::deserialize(&val)
+                    .map_err(|_| MelnetError::Custom("fatal deserialization error".into()))?;
+                Ok(Some(val))
+            })
+            .await
     }
 
     /// Gets a local SMT branch, validated.

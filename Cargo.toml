@@ -28,6 +28,9 @@ tmelcrypt = "0.2.3"
 thiserror = "1.0.30"
 anyhow="1"
 async-trait = "0.1.52"
+moka = "0.7.1"
+bytes = "1.1.0"
+derivative = "2.2.0"
 
 [features]
 server=[]
