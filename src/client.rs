@@ -10,11 +10,11 @@ use std::{
 };
 use themelio_stf::{PoolKey, SmtMapping, StakeMapping};
 use themelio_structs::{
-    AbbrBlock, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID,
+    AbbrBlock, Address, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID,
     PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
-use tmelcrypt::HashVal;
+use tmelcrypt::{HashVal, Hashable};
 
 use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRequest, StateSummary, Substate};
 
@@ -303,6 +303,18 @@ impl ValClientSnapshot {
         self.get_smt_value_serde(Substate::Coins, coinid).await
     }
 
+    /// Gets a coin count.
+    pub async fn get_coin_count(&self, covhash: Address) -> melnet::Result<Option<u64>> {
+        let val = self
+            .get_smt_value(Substate::Coins, covhash.0.hash_keyed(b"coin_count"))
+            .await?;
+        if val.is_empty() {
+            Ok(None)
+        } else {
+            Ok(stdcode::deserialize(&val).map_err(|e| MelnetError::Custom(e.to_string()))?)
+        }
+    }
+
     /// A helper function to gets the CoinDataHeight for a coin *spent* at this height. This requires special handling because if the coin was created and spent at the same height, then the coin would never appear in a confirmed coin mapping.
     pub async fn get_coin_spent_here(
         &self,
@@ -349,22 +361,18 @@ impl ValClientSnapshot {
         substate: Substate,
         key: S,
     ) -> melnet::Result<Option<D>> {
-        self.cache
-            .get_or_try_fill((self.height, substate, &key), async {
-                let val = self
-                    .get_smt_value(
-                        substate,
-                        tmelcrypt::hash_single(&stdcode::serialize(&key).unwrap()),
-                    )
-                    .await?;
-                if val.is_empty() {
-                    return Ok(None);
-                }
-                let val = stdcode::deserialize(&val)
-                    .map_err(|_| MelnetError::Custom("fatal deserialization error".into()))?;
-                Ok(Some(val))
-            })
-            .await
+        let val = self
+            .get_smt_value(
+                substate,
+                tmelcrypt::hash_single(&stdcode::serialize(&key).unwrap()),
+            )
+            .await?;
+        if val.is_empty() {
+            return Ok(None);
+        }
+        let val = stdcode::deserialize(&val)
+            .map_err(|_| MelnetError::Custom("fatal deserialization error".into()))?;
+        Ok(Some(val))
     }
 
     /// Gets a local SMT branch, validated.
@@ -376,14 +384,16 @@ impl ValClientSnapshot {
             Substate::Stakes => self.header.stakes_hash,
             Substate::Transactions => self.header.transactions_hash,
         };
+        self.cache.get_or_try_fill(verify_against, async {
         let (val, branch) = self.raw.get_smt_branch(self.height, substate, key).await?;
-        if !branch.verify(verify_against.0, key.0, &val) {
-            return Err(MelnetError::Custom(format!(
-                "unable to verify merkle proof for height {:?}, substate {:?}, key {:?}, value {:?}, branch {:?}",
-                self.height, substate, key, val, branch
-            )));
-        }
-        Ok(val)
+            if !branch.verify(verify_against.0, key.0, &val) {
+                return Err(MelnetError::Custom(format!(
+                    "unable to verify merkle proof for height {:?}, substate {:?}, key {:?}, value {:?}, branch {:?}",
+                    self.height, substate, key, val, branch
+                )));
+            }
+            Ok(val)
+        }).await
     }
 }
 
