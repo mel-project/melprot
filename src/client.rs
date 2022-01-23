@@ -311,9 +311,9 @@ impl ValClientSnapshot {
         if val.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(
-                stdcode::deserialize(&val).map_err(|e| MelnetError::Custom(e.to_string()))?,
-            ))
+            Ok(Some(stdcode::deserialize(&val).map_err(|e| {
+                MelnetError::Custom(format!("bad coin count {:?} {:?}", val, e.to_string()))
+            })?))
         }
     }
 
@@ -386,7 +386,7 @@ impl ValClientSnapshot {
             Substate::Stakes => self.header.stakes_hash,
             Substate::Transactions => self.header.transactions_hash,
         };
-        self.cache.get_or_try_fill(verify_against, async {
+        self.cache.get_or_try_fill((verify_against, key), async {
         let (val, branch) = self.raw.get_smt_branch(self.height, substate, key).await?;
             if !branch.verify(verify_against.0, key.0, &val) {
                 return Err(MelnetError::Custom(format!(
