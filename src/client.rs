@@ -311,7 +311,9 @@ impl ValClientSnapshot {
         if val.is_empty() {
             Ok(None)
         } else {
-            Ok(stdcode::deserialize(&val).map_err(|e| MelnetError::Custom(e.to_string()))?)
+            Ok(Some(
+                stdcode::deserialize(&val).map_err(|e| MelnetError::Custom(e.to_string()))?,
+            ))
         }
     }
 
