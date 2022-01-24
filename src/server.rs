@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use melnet::Request;
 use novasmt::{CompressedProof, ContentAddrStore};
 use themelio_stf::SealedState;
-use themelio_structs::{AbbrBlock, BlockHeight, ConsensusProof, Transaction};
+use themelio_structs::{AbbrBlock, Address, BlockHeight, CoinID, ConsensusProof, Transaction};
 use tmelcrypt::HashVal;
 
 use crate::{NodeRequest, StateSummary, Substate};
@@ -33,6 +33,15 @@ pub trait NodeServer<C: ContentAddrStore>: Send + Sync {
 
     /// Gets stakers
     fn get_stakers_raw(&self, height: BlockHeight) -> anyhow::Result<BTreeMap<HashVal, Vec<u8>>>;
+
+    /// Gets *possibly a subset* of the list of all coins associated with a covenant hash. Can return None if the node simply doesn't index this information.
+    fn get_some_coins(
+        &self,
+        height: BlockHeight,
+        covhash: Address,
+    ) -> anyhow::Result<Option<Vec<CoinID>>> {
+        Ok(None)
+    }
 }
 
 /// This is a melnet responder that wraps a NodeServer.
