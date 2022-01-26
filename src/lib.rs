@@ -10,7 +10,7 @@ pub use inmemory_truststore::*;
 pub use server::*;
 
 use serde::{Deserialize, Serialize};
-use themelio_structs::{BlockHeight, ConsensusProof, Header, NetID, Transaction, TxHash};
+use themelio_structs::{Address, BlockHeight, ConsensusProof, Header, NetID, Transaction, TxHash};
 use tmelcrypt::HashVal;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +31,7 @@ pub enum Substate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum NodeRequest {
     SendTx(Transaction),
     GetAbbrBlock(BlockHeight),
@@ -38,4 +39,5 @@ pub enum NodeRequest {
     GetSmtBranch(BlockHeight, Substate, HashVal),
     GetStakersRaw(BlockHeight),
     GetPartialBlock(BlockHeight, Vec<TxHash>),
+    GetSomeCoins(BlockHeight, Address),
 }

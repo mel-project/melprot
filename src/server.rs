@@ -100,6 +100,9 @@ impl<C: ContentAddrStore, S: NodeServer<C>> melnet::Endpoint<NodeRequest, Vec<u8
                     .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
                 Ok(stdcode::serialize(&blk)?)
             }
+            NodeRequest::GetSomeCoins(height, address) => Ok(stdcode::serialize(
+                &server.get_some_coins(height, address)?,
+            )?),
         }
     }
 }

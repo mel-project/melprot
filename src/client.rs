@@ -317,6 +317,43 @@ impl ValClientSnapshot {
         }
     }
 
+    /// Gets all the coins associated with the given address. Return None if the server simply does not index this information.
+    pub async fn get_coins(
+        &self,
+        covhash: Address,
+    ) -> melnet::Result<Option<BTreeMap<CoinID, CoinDataHeight>>> {
+        self.cache
+            .get_or_try_fill(("coins", self.height), async {
+                let coins = self.raw.get_some_coins(self.height, covhash).await?;
+                if let Some(coins) = coins {
+                    let coins: HashSet<CoinID> = coins.into_iter().collect();
+                    let count = self.get_coin_count(covhash).await?;
+                    if let Some(count) = count {
+                        if count != coins.len() as u64 {
+                            return Err(MelnetError::Custom(format!(
+                                "got incomplete list of {} coins rather than {}",
+                                coins.len(),
+                                count
+                            )));
+                        }
+                    }
+                    // fill in the coins
+                    let mut toret = BTreeMap::new();
+                    for coin in coins {
+                        let data = self
+                            .get_coin(coin)
+                            .await?
+                            .expect("invalid data received while getting coin list");
+                        toret.insert(coin, data);
+                    }
+                    Ok(Some(toret))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+    }
+
     /// A helper function to gets the CoinDataHeight for a coin *spent* at this height. This requires special handling because if the coin was created and spent at the same height, then the coin would never appear in a confirmed coin mapping.
     pub async fn get_coin_spent_here(
         &self,
@@ -500,6 +537,20 @@ impl NodeClient {
         height: BlockHeight,
     ) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>> {
         get_stakers_raw(self.clone(), height).await
+    }
+
+    /// Gets some coins.
+    pub async fn get_some_coins(
+        &self,
+        height: BlockHeight,
+        owner: Address,
+    ) -> melnet::Result<Option<Vec<CoinID>>> {
+        stdcode::deserialize(
+            &self
+                .request(NodeRequest::GetSomeCoins(height, owner))
+                .await?,
+        )
+        .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
     }
 }
 
