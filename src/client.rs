@@ -323,7 +323,7 @@ impl ValClientSnapshot {
         covhash: Address,
     ) -> melnet::Result<Option<BTreeMap<CoinID, CoinDataHeight>>> {
         self.cache
-            .get_or_try_fill(("coins", self.height), async {
+            .get_or_try_fill(("coins", self.height, covhash), async {
                 let coins = self.raw.get_some_coins(self.height, covhash).await?;
                 if let Some(coins) = coins {
                     let coins: HashSet<CoinID> = coins.into_iter().collect();
