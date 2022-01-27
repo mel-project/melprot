@@ -338,13 +338,23 @@ impl ValClientSnapshot {
                         }
                     }
                     // fill in the coins
-                    let mut toret = BTreeMap::new();
+                    let mut coin_futs = BTreeMap::new();
                     for coin in coins {
-                        let data = self
-                            .get_coin(coin)
-                            .await?
-                            .expect("invalid data received while getting coin list");
-                        toret.insert(coin, data);
+                        let this = self.clone();
+                        let fut_data = smolscale::spawn(async move {
+                            let r = this
+                                .get_coin(coin)
+                                .await?
+                                .expect("invalid data received while getting coin list");
+                            Ok::<_, melnet::MelnetError>(r)
+                        });
+                        coin_futs.insert(coin, fut_data);
+                    }
+                    let mut toret = BTreeMap::new();
+                    for (i, (k, v)) in coin_futs.into_iter().enumerate() {
+                        let v = v.await?;
+                        log::debug!("loading coin {}", i);
+                        toret.insert(k, v);
                     }
                     Ok(Some(toret))
                 } else {
