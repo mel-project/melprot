@@ -194,9 +194,13 @@ impl<T: TrustStore> ValClient<T> {
         // first obtain trusted SMT branch
         let (abbr_block, _) = self.raw.get_abbr_block(checkpoint.height).await?;
         if abbr_block.header.hash() != checkpoint.header_hash {
-            return Err(MelnetError::Custom(
-                "remote block contradicted trusted block hash".into(),
-            ));
+            return Err(MelnetError::Custom(format!(
+                "remote block contradicted trusted block hash: trusted {}, yet got {}:{}:{}",
+                checkpoint.header_hash,
+                checkpoint.height,
+                abbr_block.header.hash(),
+                abbr_block.header.height
+            )));
         }
         let trusted_stake_hash = abbr_block.header.stakes_hash;
         let mut mapping = temp_forest.get_tree(Default::default()).unwrap();
