@@ -1,18 +1,18 @@
-use std::future::Future;
+use std::{future::Future, sync::RwLock};
 
 use bytes::Bytes;
-use moka::sync::Cache;
+use lru::LruCache;
 use serde::{de::DeserializeOwned, Serialize};
 use stdcode::StdcodeSerializeExt;
 
 pub struct AsyncCache {
-    inner: Cache<Bytes, Bytes>,
+    inner: RwLock<LruCache<Bytes, Bytes>>,
 }
 
 impl AsyncCache {
     pub fn new(size: u64) -> Self {
         Self {
-            inner: Cache::new(size),
+            inner: LruCache::new(size as usize).into(),
         }
     }
 
@@ -21,12 +21,13 @@ impl AsyncCache {
         key: K,
         fallback: impl Future<Output = Result<V, E>>,
     ) -> Result<V, E> {
-        if let Some(b) = self.inner.get(&Bytes::from(key.stdcode())) {
+        let key = Bytes::from(key.stdcode());
+        let b = self.inner.read().unwrap().peek(&key).cloned();
+        if let Some(b) = b {
             Ok(stdcode::deserialize(&b).expect("badly serialized thing in cache"))
         } else {
             let res = fallback.await?;
-            self.inner
-                .insert(key.stdcode().into(), res.stdcode().into());
+            self.inner.write().unwrap().put(key, res.stdcode().into());
             Ok(res)
         }
     }
