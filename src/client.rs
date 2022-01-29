@@ -120,6 +120,11 @@ impl<T: TrustStore> ValClient<T> {
     /// Obtains a validated snapshot based on what height was trusted.
     pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
         let mut summary = self.raw.get_summary().await?;
+        if summary.height != summary.header.height {
+            return Err(MelnetError::Custom(
+                "self-contradictory summary".to_string(),
+            ));
+        }
         let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
         if summary.height.epoch() > safe_height.epoch() + 1 {
             // TODO: Is this the correct condition?
