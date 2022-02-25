@@ -1,6 +1,6 @@
 [package]
 name = "themelio-nodeprot"
-version = "0.10.11-alpha.0"
+version = "0.10.11"
 authors = ["Themelio Labs"]
 edition = "2018"
 
