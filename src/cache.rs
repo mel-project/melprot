@@ -24,8 +24,10 @@ impl AsyncCache {
         let key = Bytes::from(key.stdcode());
         let b = self.inner.read().unwrap().peek(&key).cloned();
         if let Some(b) = b {
+            log::debug!("cache HIT for key {}", hex::encode(&key));
             Ok(stdcode::deserialize(&b).expect("badly serialized thing in cache"))
         } else {
+            log::debug!("cache MISS for key {}", hex::encode(&key));
             let res = fallback.await?;
             self.inner.write().unwrap().put(key, res.stdcode().into());
             Ok(res)
