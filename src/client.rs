@@ -119,69 +119,76 @@ impl<T: TrustStore> ValClient<T> {
 
     /// Obtains a validated snapshot based on what height was trusted.
     pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
-        let mut summary = self.raw.get_summary().await?;
-        if summary.height != summary.header.height {
-            return Err(MelnetError::Custom(
-                "self-contradictory summary".to_string(),
-            ));
-        }
-        let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
-        if summary.height.epoch() > safe_height.epoch() + 1 {
-            // TODO: Is this the correct condition?
-            return Err(MelnetError::Custom(format!(
-                "trusted height {} in epoch {} but remote height {} in epoch {}",
-                safe_height,
-                safe_height.epoch(),
-                summary.height,
-                summary.height.epoch()
-            )));
-        }
-        if summary.height.epoch() > safe_height.epoch()
-            && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
-        {
-            // to cross the epoch, we must obtain the epoch-terminal snapshot first.
-            // this places the correct thing in the cache, which then lets this one verify too.
-            let epoch_ending_height = BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
-            let (ending_abbr_block, ending_cproof) =
-                self.raw.get_abbr_block(epoch_ending_height).await?;
-            log::warn!(
-                "fast-forwarding proof from {} to {}",
-                safe_height,
-                epoch_ending_height
-            );
-            summary.height = epoch_ending_height;
-            summary.header = ending_abbr_block.header;
-            summary.proof = ending_cproof;
-        }
-        // we use the stakers to validate the latest summary
-        let mut total_votes = 0.0;
-        for doc in safe_stakers.val_iter() {
-            if let Some(sig) = summary.proof.get(&doc.pubkey) {
-                if doc.pubkey.verify(&summary.header.hash(), sig) {
-                    total_votes += safe_stakers.vote_power(summary.height.epoch(), doc.pubkey);
+        loop {
+            let mut summary = self.raw.get_summary().await?;
+            if summary.height != summary.header.height {
+                return Err(MelnetError::Custom(
+                    "self-contradictory summary".to_string(),
+                ));
+            }
+            let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
+            if summary.height.epoch() > safe_height.epoch() + 1 {
+                // TODO: Is this the correct condition?
+                return Err(MelnetError::Custom(format!(
+                    "trusted height {} in epoch {} but remote height {} in epoch {}",
+                    safe_height,
+                    safe_height.epoch(),
+                    summary.height,
+                    summary.height.epoch()
+                )));
+            }
+            if summary.height.epoch() > safe_height.epoch()
+                && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
+            {
+                // to cross the epoch, we must obtain the epoch-terminal snapshot first.
+                // this places the correct thing in the cache, which then lets this one verify too.
+                let epoch_ending_height = BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
+                let (ending_abbr_block, ending_cproof) =
+                    self.raw.get_abbr_block(epoch_ending_height).await?;
+                log::warn!(
+                    "fast-forwarding proof from {} to {}",
+                    safe_height,
+                    epoch_ending_height
+                );
+                summary.height = epoch_ending_height;
+                summary.header = ending_abbr_block.header;
+                summary.proof = ending_cproof;
+                self.trust(TrustedHeight {
+                    height: summary.height,
+                    header_hash: summary.header.hash(),
+                });
+                continue;
+            }
+            // we use the stakers to validate the latest summary
+            let mut total_votes = 0.0;
+            for doc in safe_stakers.val_iter() {
+                if let Some(sig) = summary.proof.get(&doc.pubkey) {
+                    if doc.pubkey.verify(&summary.header.hash(), sig) {
+                        total_votes += safe_stakers.vote_power(summary.height.epoch(), doc.pubkey);
+                    }
                 }
             }
-        }
 
-        if total_votes < 0.7 {
-            return Err(MelnetError::Custom(format!(
-                "remote height {} has insufficient votes (total_votes = {}, stakers = {:?})",
-                summary.height,
-                total_votes,
-                safe_stakers.val_iter().collect::<Vec<_>>()
-            )));
+            if total_votes < 0.7 {
+                return Err(MelnetError::Custom(format!(
+                    "remote height {} has insufficient votes (total_votes = {}, stakers = {:?})",
+                    summary.height,
+                    total_votes,
+                    safe_stakers.val_iter().collect::<Vec<_>>()
+                )));
+            }
+            // automatically update trust
+            self.trust(TrustedHeight {
+                height: summary.height,
+                header_hash: summary.header.hash(),
+            });
+            return Ok(ValClientSnapshot {
+                height: summary.height,
+                header: summary.header,
+                raw: self.raw.clone(),
+                cache: self.cache.clone(),
+            });
         }
-        // automatically update trust
-        self.trust(TrustedHeight {
-            height: summary.height,
-            header_hash: summary.header.hash(),
-        });
-        Ok(ValClientSnapshot {
-            height: summary.height,
-            header: summary.header,
-            raw: self.raw.clone(),
-            cache: self.cache.clone(),
-        })
     }
 
     /// Helper function to obtain the trusted staker set.
