@@ -1,3 +1,4 @@
+use async_recursion::async_recursion;
 use derivative::Derivative;
 use melnet::MelnetError;
 use novasmt::{CompressedProof, Database, FullProof, InMemoryCas};
@@ -80,7 +81,7 @@ impl ValClient<InMemoryTrustStore> {
     }
 }
 
-impl<T: TrustStore> ValClient<T> {
+impl<T: TrustStore + Send + Sync> ValClient<T> {
     /// Creates a new ValClient.
     pub fn new_with_truststore(netid: NetID, remote: SocketAddr, trust_store: T) -> Self {
         let raw = NodeClient::new(netid, remote);
@@ -127,73 +128,10 @@ impl<T: TrustStore> ValClient<T> {
         let (height, header) = self
             .cache
             .get_or_try_fill((cache_key, "summary"), async {
-                loop {
-                    let mut summary = self.raw.get_summary().await?;
-                    if summary.height != summary.header.height {
-                        return Err(MelnetError::Custom(
-                            "self-contradictory summary".to_string(),
-                        ));
-                    }
-                    let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
-                    if summary.height.epoch() > safe_height.epoch() + 1 {
-                        // TODO: Is this the correct condition?
-                        return Err(MelnetError::Custom(format!(
-                            "trusted height {} in epoch {} but remote height {} in epoch {}",
-                            safe_height,
-                            safe_height.epoch(),
-                            summary.height,
-                            summary.height.epoch()
-                        )));
-                    }
-                    if summary.height.epoch() > safe_height.epoch()
-                        && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
-                    {
-                        // to cross the epoch, we must obtain the epoch-terminal snapshot first.
-                        // this places the correct thing in the cache, which then lets this one verify too.
-                        let epoch_ending_height =
-                            BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
-                        let (ending_abbr_block, ending_cproof) =
-                            self.raw.get_abbr_block(epoch_ending_height).await?;
-                        log::warn!(
-                            "fast-forwarding proof from {} to {}",
-                            safe_height,
-                            epoch_ending_height
-                        );
-                        summary.height = epoch_ending_height;
-                        summary.header = ending_abbr_block.header;
-                        summary.proof = ending_cproof;
-                        self.trust(TrustedHeight {
-                            height: summary.height,
-                            header_hash: summary.header.hash(),
-                        });
-                        continue;
-                    }
-                    // we use the stakers to validate the latest summary
-                    let mut total_votes = 0.0;
-                    for doc in safe_stakers.val_iter() {
-                        if let Some(sig) = summary.proof.get(&doc.pubkey) {
-                            if doc.pubkey.verify(&summary.header.hash(), sig) {
-                                total_votes +=
-                                    safe_stakers.vote_power(summary.height.epoch(), doc.pubkey);
-                            }
-                        }
-                    }
-
-                    if total_votes < 0.7 {
-                        return Err(MelnetError::Custom(format!(
-                    "remote height {} has insufficient votes (total_votes = {}, stakers = {:?})",
-                    summary.height,
-                    total_votes,
-                    safe_stakers.val_iter().collect::<Vec<_>>()
-                )));
-                    }
-                    // automatically update trust
-                    self.trust(TrustedHeight {
-                        height: summary.height,
-                        header_hash: summary.header.hash(),
-                    });
-                    return Ok((summary.height, summary.header));
-                }
+                let summary = self.raw.get_summary().await?;
+                self.validate_height(summary.height, summary.header, summary.proof)
+                    .await?;
+                Ok((summary.height, summary.header))
             })
             .await?;
         Ok(ValClientSnapshot {
@@ -202,6 +140,72 @@ impl<T: TrustStore> ValClient<T> {
             raw: self.raw.clone(),
             cache: self.cache.clone(),
         })
+    }
+
+    /// Helper to validate a given block height and header.
+    #[async_recursion]
+    async fn validate_height(
+        &self,
+        height: BlockHeight,
+        header: Header,
+        proof: ConsensusProof,
+    ) -> melnet::Result<()> {
+        let safe_stakers = {
+            loop {
+                let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
+                if height.epoch() > safe_height.epoch() + 1 {
+                    log::error!(
+                    "OUTDATED CHECKPOINT: trusted height {} in epoch {} but remote height {} in epoch {}. Continuing with best-effort to update checkpoint",
+                    safe_height,
+                    safe_height.epoch(),
+                    height,
+                    height.epoch()
+                );
+                    // Okay, we must recurse to one epoch ago now
+                    let old_height = BlockHeight(height.0.saturating_sub(STAKE_EPOCH));
+                    let (old_block, old_proof) = self.raw.get_abbr_block(old_height).await?;
+                    self.validate_height(old_height, old_block.header, old_proof)
+                        .await?;
+                } else if height.epoch() > safe_height.epoch()
+                    && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
+                {
+                    // to cross the epoch, we must obtain the epoch-terminal snapshot first.
+                    // this places the correct thing in the cache, which then lets this one verify too.
+                    let epoch_ending_height =
+                        BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
+                    let (old_block, old_proof) =
+                        self.raw.get_abbr_block(epoch_ending_height).await?;
+                    self.validate_height(epoch_ending_height, old_block.header, old_proof)
+                        .await?;
+                } else {
+                    break safe_stakers;
+                }
+            }
+        };
+        // we use the stakers to validate the latest summary
+        let mut total_votes = 0.0;
+        for doc in safe_stakers.val_iter() {
+            if let Some(sig) = proof.get(&doc.pubkey) {
+                if doc.pubkey.verify(&header.hash(), sig) {
+                    total_votes += safe_stakers.vote_power(height.epoch(), doc.pubkey);
+                }
+            }
+        }
+
+        if total_votes < 0.7 {
+            return Err(MelnetError::Custom(format!(
+                "remote height {} has insufficient votes (total_votes = {}, stakers = {:?})",
+                height,
+                total_votes,
+                safe_stakers.val_iter().collect::<Vec<_>>()
+            )));
+        }
+        // automatically update trust
+        self.trust(TrustedHeight {
+            height,
+            header_hash: header.hash(),
+        });
+        Ok(())
     }
 
     /// Helper function to obtain the trusted staker set.
