@@ -1,16 +1,17 @@
-use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use melnet::Request;
-use novasmt::{CompressedProof, ContentAddrStore};
-use themelio_stf::SealedState;
-use themelio_structs::{AbbrBlock, Address, BlockHeight, CoinID, ConsensusProof, Transaction};
+use novasmt::CompressedProof;
+use themelio_structs::{
+    AbbrBlock, Address, Block, BlockHeight, CoinID, ConsensusProof, Transaction,
+};
 use tmelcrypt::HashVal;
 
 use crate::{NodeRequest, StateSummary, Substate};
 
 /// This trait represents a server of Themelio's node protocol. Actual nodes should implement this.
-pub trait NodeServer<C: ContentAddrStore>: Send + Sync {
+pub trait NodeServer: Send + Sync {
     /// Broadcasts a transaction to the network
     fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> anyhow::Result<()>;
 
@@ -21,7 +22,7 @@ pub trait NodeServer<C: ContentAddrStore>: Send + Sync {
     fn get_summary(&self) -> anyhow::Result<StateSummary>;
 
     /// Gets a full state
-    fn get_state(&self, height: BlockHeight) -> anyhow::Result<SealedState<C>>;
+    fn get_block(&self, height: BlockHeight) -> anyhow::Result<Block>;
 
     /// Gets an SMT branch
     fn get_smt_branch(
@@ -45,34 +46,29 @@ pub trait NodeServer<C: ContentAddrStore>: Send + Sync {
 }
 
 /// This is a melnet responder that wraps a NodeServer.
-pub struct NodeResponder<C: ContentAddrStore, S: NodeServer<C> + 'static> {
+pub struct NodeResponder<S: NodeServer + 'static> {
     server: Arc<S>,
-    _p: PhantomData<C>,
 }
 
-impl<C: ContentAddrStore, S: NodeServer<C>> NodeResponder<C, S> {
+impl<S: NodeServer> NodeResponder<S> {
     /// Creates a new NodeResponder from something that implements NodeServer.
     pub fn new(server: S) -> Self {
         Self {
             server: Arc::new(server),
-            _p: Default::default(),
         }
     }
 }
 
-impl<C: ContentAddrStore, S: NodeServer<C>> Clone for NodeResponder<C, S> {
+impl<S: NodeServer> Clone for NodeResponder<S> {
     fn clone(&self) -> Self {
         Self {
             server: self.server.clone(),
-            _p: Default::default(),
         }
     }
 }
 
 #[async_trait]
-impl<C: ContentAddrStore, S: NodeServer<C>> melnet::Endpoint<NodeRequest, Vec<u8>>
-    for NodeResponder<C, S>
-{
+impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> {
     async fn respond(&self, req: Request<NodeRequest>) -> anyhow::Result<Vec<u8>> {
         let state = req.state.clone();
         let server = self.server.clone();
@@ -94,8 +90,7 @@ impl<C: ContentAddrStore, S: NodeServer<C>> melnet::Endpoint<NodeRequest, Vec<u8
             NodeRequest::GetPartialBlock(height, mut hvv) => {
                 hvv.sort();
                 let hvv = hvv;
-                let ss = server.get_state(height)?;
-                let mut blk = ss.to_block();
+                let mut blk = server.get_block(height)?;
                 blk.transactions
                     .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
                 Ok(stdcode::serialize(&blk)?)
