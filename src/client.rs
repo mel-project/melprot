@@ -1,7 +1,7 @@
 use async_recursion::async_recursion;
 use derivative::Derivative;
 use melnet::MelnetError;
-use novasmt::{CompressedProof, Database, FullProof, InMemoryCas};
+use novasmt::{CompressedProof, Database, FullProof, InMemoryCas, Tree};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
@@ -11,10 +11,10 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use themelio_stf::{PoolKey, SmtMapping, StakeMapping};
+
 use themelio_structs::{
-    AbbrBlock, Address, Block, BlockHeight, CoinDataHeight, CoinID, ConsensusProof, Header, NetID,
-    PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
+    AbbrBlock, Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof,
+    Header, NetID, PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
@@ -183,21 +183,25 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
             }
         };
         // we use the stakers to validate the latest summary
-        let mut total_votes = 0.0;
-        for doc in safe_stakers.val_iter() {
-            if let Some(sig) = proof.get(&doc.pubkey) {
-                if doc.pubkey.verify(&header.hash(), sig) {
-                    total_votes += safe_stakers.vote_power(height.epoch(), doc.pubkey);
+        let mut good_votes = CoinValue(0);
+        let mut total_votes = CoinValue(0);
+        for (_, doc) in safe_stakers.iter() {
+            let doc: StakeDoc =
+                stdcode::deserialize(&doc).map_err(|e| MelnetError::Custom(format!("{:?}", e)))?;
+            if height.epoch() >= doc.e_start && height.epoch() < doc.e_post_end {
+                total_votes += doc.syms_staked;
+                if let Some(sig) = proof.get(&doc.pubkey) {
+                    if doc.pubkey.verify(&header.hash(), sig) {
+                        good_votes += doc.syms_staked
+                    }
                 }
             }
         }
 
-        if total_votes < 0.7 {
+        if good_votes < total_votes * 2 / 3 {
             return Err(MelnetError::Custom(format!(
-                "remote height {} has insufficient votes (total_votes = {}, stakers = {:?})",
-                height,
-                total_votes,
-                safe_stakers.val_iter().collect::<Vec<_>>()
+                "remote height {} has insufficient votes (total_votes = {}, good_votes = {})",
+                height, total_votes, good_votes
             )));
         }
         // automatically update trust
@@ -209,9 +213,7 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
     }
 
     /// Helper function to obtain the trusted staker set.
-    async fn get_trusted_stakers(
-        &self,
-    ) -> melnet::Result<(BlockHeight, StakeMapping<InMemoryCas>)> {
+    async fn get_trusted_stakers(&self) -> melnet::Result<(BlockHeight, Tree<InMemoryCas>)> {
         let checkpoint = self.trust_store.get(self.netid).ok_or_else(|| {
             MelnetError::Custom(
                 "Expected to find a trusted block when fetching trusted stakers".into(),
@@ -241,7 +243,7 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
                 "remote staker set contradicted valid header".into(),
             ));
         }
-        Ok((checkpoint.height, SmtMapping::new(mapping)))
+        Ok((checkpoint.height, mapping))
     }
 }
 
