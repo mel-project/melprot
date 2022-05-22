@@ -34,6 +34,9 @@ derivative = "2.2.0"
 lru = "0.7.2"
 once_cell = "1.10.0"
 async-recursion = "1.0.0"
+rustc-hash = "1.1.0"
+arrayref = "0.3.6"
+parking_lot = "0.12.0"
 
 [features]
 server=[]

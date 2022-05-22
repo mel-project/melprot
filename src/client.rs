@@ -125,13 +125,13 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
         // cache key: current time, divided by 10 seconds
         let cache_key = INCEPTION.elapsed().as_secs() / 10;
-        let (height, header) = self
+        let (height, header, proof) = self
             .cache
             .get_or_try_fill((cache_key, "summary"), async {
                 let summary = self.raw.get_summary().await?;
-                self.validate_height(summary.height, summary.header, summary.proof)
+                self.validate_height(summary.height, summary.header, summary.proof.clone())
                     .await?;
-                Ok((summary.height, summary.header))
+                Ok((summary.height, summary.header, summary.proof))
             })
             .await?;
         Ok(ValClientSnapshot {
