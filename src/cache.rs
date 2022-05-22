@@ -35,7 +35,7 @@ impl AsyncCache {
         fallback: impl Future<Output = Result<V, E>>,
     ) -> Result<V, E> {
         let key = key.stdcode().hash();
-        let bucket = (u64::from_le_bytes(*array_ref![key.0, 0, 8]) / (SHARDS as u64)) as usize;
+        let bucket = (u64::from_le_bytes(*array_ref![key.0, 0, 8]) % (SHARDS as u64)) as usize;
 
         let b = self.inner[bucket].lock().get(&key).cloned();
         if let Some(b) = b {
