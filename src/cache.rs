@@ -11,7 +11,7 @@ use tmelcrypt::{HashVal, Hashable};
 
 const SHARDS: usize = 6;
 
-pub struct AsyncCache {
+pub struct  AsyncCache {
     inner: [Mutex<LruCache<HashVal, Bytes, BuildHasherDefault<FxHasher>>>; SHARDS],
 }
 

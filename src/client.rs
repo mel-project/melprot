@@ -141,7 +141,30 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
             cache: self.cache.clone(),
         })
     }
+    /// Obtains a validated snapshot based on a given height
+    pub async fn older_snapshot(&self, height: u64) -> melnet::Result<ValClientSnapshot> {
+        let snap = self.snapshot().await?;
+        Ok(snap.get_older(height.into()).await?)
+    }
 
+    pub async fn get_history(&self, height: u64) -> melnet::Result<Header> {
+        let snapshot = self.snapshot().await?;
+        let hist = snapshot
+            .get_history(height.into())
+            .await?
+            .ok_or(MelnetError::Custom((format!("Unable to get history at height {height}"))))?;
+        Ok(hist)
+    }
+    pub async fn get_reward_amount(&self, height: u64) -> melnet::Result<CoinValue> {
+        let reward_coin = self
+            .older_snapshot(height)
+            .await?
+            .get_coin(CoinID::proposer_reward(height.into()))
+            .await?;
+
+        let reward_amount = reward_coin.map(|v| v.coin_data.value).unwrap_or_default();
+        Ok(reward_amount)
+    }
     /// Helper to validate a given block height and header.
     #[async_recursion]
     async fn validate_height(
