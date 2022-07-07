@@ -1,4 +1,4 @@
-mod cache;
+pub mod cache;
 mod client;
 mod inmemory_truststore;
 #[cfg(feature = "server")]

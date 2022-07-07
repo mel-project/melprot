@@ -1,3 +1,4 @@
+// use anyhow::Context;
 use async_recursion::async_recursion;
 use derivative::Derivative;
 use melnet::MelnetError;
@@ -121,7 +122,7 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
     }
 
     /// Obtains a validated snapshot based on what height was trusted.
-    pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
+    pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot>{
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
         // cache key: current time, divided by 10 seconds
         let cache_key = INCEPTION.elapsed().as_secs() / 10;
@@ -141,12 +142,15 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
             cache: self.cache.clone(),
         })
     }
-    /// Obtains a validated snapshot based on a given height
+
+    /// Helper obtains a validated snapshot based on a given height
     pub async fn older_snapshot(&self, height: u64) -> melnet::Result<ValClientSnapshot> {
         let snap = self.snapshot().await?;
         Ok(snap.get_older(height.into()).await?)
     }
 
+    
+    /// Helper gets the history from a snapshot at a given height
     pub async fn get_history(&self, height: u64) -> melnet::Result<Header> {
         let snapshot = self.snapshot().await?;
         let hist = snapshot
