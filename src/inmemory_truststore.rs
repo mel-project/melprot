@@ -22,7 +22,7 @@ impl InMemoryTrustStore {
             inner: Default::default(),
         }
     }
-}
+} 
 
 impl TrustStore for InMemoryTrustStore {
     fn set(&self, netid: NetID, trusted: TrustedHeight) {

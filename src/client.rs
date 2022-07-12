@@ -122,11 +122,11 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
     }
 
     /// Obtains a validated snapshot based on what height was trusted.
-    pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot>{
+    pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
         // cache key: current time, divided by 10 seconds
         let cache_key = INCEPTION.elapsed().as_secs() / 10;
-        let (height, header, proof) = self
+        let (height, header, _) = self
             .cache
             .get_or_try_fill((cache_key, "summary"), async {
                 let summary = self.raw.get_summary().await?;
@@ -143,32 +143,12 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
         })
     }
 
-    /// Helper obtains a validated snapshot based on a given height
+    /// Convenience function to obtains a validated snapshot based on a given height.
     pub async fn older_snapshot(&self, height: u64) -> melnet::Result<ValClientSnapshot> {
         let snap = self.snapshot().await?;
-        Ok(snap.get_older(height.into()).await?)
+        snap.get_older(height.into()).await
     }
 
-    
-    /// Helper gets the history from a snapshot at a given height
-    pub async fn get_history(&self, height: u64) -> melnet::Result<Header> {
-        let snapshot = self.snapshot().await?;
-        let hist = snapshot
-            .get_history(height.into())
-            .await?
-            .ok_or(MelnetError::Custom((format!("Unable to get history at height {height}"))))?;
-        Ok(hist)
-    }
-    pub async fn get_reward_amount(&self, height: u64) -> melnet::Result<CoinValue> {
-        let reward_coin = self
-            .older_snapshot(height)
-            .await?
-            .get_coin(CoinID::proposer_reward(height.into()))
-            .await?;
-
-        let reward_amount = reward_coin.map(|v| v.coin_data.value).unwrap_or_default();
-        Ok(reward_amount)
-    }
     /// Helper to validate a given block height and header.
     #[async_recursion]
     async fn validate_height(
@@ -326,6 +306,13 @@ impl ValClientSnapshot {
     /// Gets the header.
     pub fn current_header(&self) -> Header {
         self.header
+    }
+
+    /// Helper function to obtain the proposer reward amount.
+    pub async fn get_proposer_reward(&self) -> melnet::Result<CoinValue> {
+        let reward_coin = self.get_coin(CoinID::proposer_reward(self.height)).await?;
+        let reward_amount = reward_coin.map(|v| v.coin_data.value).unwrap_or_default();
+        Ok(reward_amount)
     }
 
     /// Gets the whole block at this height.
