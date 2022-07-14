@@ -144,9 +144,9 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
     }
 
     /// Convenience function to obtains a validated snapshot based on a given height.
-    pub async fn older_snapshot(&self, height: u64) -> melnet::Result<ValClientSnapshot> {
+    pub async fn older_snapshot(&self, height: BlockHeight) -> melnet::Result<ValClientSnapshot> {
         let snap = self.snapshot().await?;
-        snap.get_older(height.into()).await
+        snap.get_older(height).await
     }
 
     /// Helper to validate a given block height and header.
