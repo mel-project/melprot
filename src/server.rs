@@ -163,6 +163,8 @@ pub trait NodeRpcProtocol {
 
 #[derive(Serialize, Deserialize, Error, Debug)]
 pub enum TransactionError {
+    #[error("Rejecting recently seen transaction")]
     RecentlySeen,
+    #[error("Duplicate transaction")]
     Duplicate,
 }
