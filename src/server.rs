@@ -128,38 +128,36 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
 #[nanorpc_derive]
 #[async_trait]
 pub trait NodeRpcProtocol {
-    async fn request(&self, req: NodeRequest) -> melnet::Result<Vec<u8>>;
-
     /// Broadcasts a transaction to the network
-    fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> anyhow::Result<()>;
+    async fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> Option<()>;
 
     /// Gets an "abbreviated block"
-    fn get_abbr_block(&self, height: BlockHeight) -> anyhow::Result<(AbbrBlock, ConsensusProof)>;
+    async fn get_abbr_block(&self, height: BlockHeight) -> Option<(AbbrBlock, ConsensusProof)>;
 
     /// Gets a state summary
-    fn get_summary(&self) -> anyhow::Result<StateSummary>;
+    async fn get_summary(&self) -> Option<StateSummary>;
 
     /// Gets a full state
-    fn get_block(&self, height: BlockHeight) -> anyhow::Result<Block>;
+    async fn get_block(&self, height: BlockHeight) -> Option<Block>;
 
     /// Gets an SMT branch
-    fn get_smt_branch(
+    async fn get_smt_branch(
         &self,
         height: BlockHeight,
         elem: Substate,
         key: HashVal,
-    ) -> anyhow::Result<(Vec<u8>, CompressedProof)>;
+    ) -> Option<(Vec<u8>, CompressedProof)>;
 
     /// Gets stakers
-    fn get_stakers_raw(&self, height: BlockHeight) -> anyhow::Result<BTreeMap<HashVal, Vec<u8>>>;
+    async fn get_stakers_raw(&self, height: BlockHeight) -> Option<BTreeMap<HashVal, Vec<u8>>>;
 
     /// Gets *possibly a subset* of the list of all coins associated with a covenant hash. Can return None if the node simply doesn't index this information.
-    fn get_some_coins(
+    async fn get_some_coins(
         &self,
         height: BlockHeight,
         covhash: Address,
-    ) -> anyhow::Result<Option<Vec<CoinID>>> {
-        Ok(None)
+    ) -> Option<Vec<CoinID>> {
+        None
     }
 }
 
