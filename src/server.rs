@@ -1,14 +1,18 @@
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use melnet::Request;
 use novasmt::CompressedProof;
 use once_cell::sync::Lazy;
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use themelio_structs::{
     AbbrBlock, Address, Block, BlockHeight, CoinID, ConsensusProof, Transaction,
 };
+use thiserror::Error;
 use tmelcrypt::HashVal;
 
 use crate::{cache::AsyncCache, NodeRequest, StateSummary, Substate};
+
+use nanorpc::nanorpc_derive;
+use serde::{Deserialize, Serialize};
 
 /// This trait represents a server of Themelio's node protocol. Actual nodes should implement this.
 pub trait NodeServer: Send + Sync {
@@ -38,8 +42,8 @@ pub trait NodeServer: Send + Sync {
     /// Gets *possibly a subset* of the list of all coins associated with a covenant hash. Can return None if the node simply doesn't index this information.
     fn get_some_coins(
         &self,
-        height: BlockHeight,
-        covhash: Address,
+        _height: BlockHeight,
+        _covhash: Address,
     ) -> anyhow::Result<Option<Vec<CoinID>>> {
         Ok(None)
     }
@@ -124,12 +128,12 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
     }
 }
 
-// TODO: move this to a more suitable place?
 #[nanorpc_derive]
 #[async_trait]
 pub trait NodeRpcProtocol {
     /// Broadcasts a transaction to the network
-    async fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> Option<()>;
+    /// NOTE: melnet::NetState was removed as a parameter here, since it's not `Serialize`.
+    async fn send_tx(&self, tx: Transaction) -> Result<(), TransactionError>;
 
     /// Gets an "abbreviated block"
     async fn get_abbr_block(&self, height: BlockHeight) -> Option<(AbbrBlock, ConsensusProof)>;
@@ -152,72 +156,12 @@ pub trait NodeRpcProtocol {
     async fn get_stakers_raw(&self, height: BlockHeight) -> Option<BTreeMap<HashVal, Vec<u8>>>;
 
     /// Gets *possibly a subset* of the list of all coins associated with a covenant hash. Can return None if the node simply doesn't index this information.
-    async fn get_some_coins(
-        &self,
-        height: BlockHeight,
-        covhash: Address,
-    ) -> Option<Vec<CoinID>> {
+    async fn get_some_coins(&self, _height: BlockHeight, _covhash: Address) -> Option<Vec<CoinID>> {
         None
     }
 }
 
-pub struct NodeRpcImpl;
-
-#[async_trait]
-impl NodeRpcProtocol for NodeRpcImpl {
-    fn request(&self) {}
-    async fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> anyhow::Result<()> { todo!()}
-    async fn get_summary(&self) -> anyhow::Result<StateSummary> {todo!()}
-    async fn get_abbr_block(
-        &self,
-        height: BlockHeight,
-    ) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
-        todo!()
-    }
-
-    async fn get_full_block(
-        &self,
-        height: BlockHeight,
-        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
-    ) -> melnet::Result<(Block, ConsensusProof)> {
-        todo!()
-    }
-
-    async fn get_smt_branch(
-        &self,
-        height: BlockHeight,
-        elem: Substate,
-        key: HashVal,
-    ) -> melnet::Result<(Vec<u8>, FullProof)> {
-        todo!()
-    }
-
-    async fn get_stakers_raw(
-        &self,
-        height: BlockHeight,
-    ) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>> {
-        todo!()
-    }
-
-    async fn get_some_coins(
-        &self,
-        height: BlockHeight,
-        owner: Address,
-    ) -> melnet::Result<Option<Vec<CoinID>>> {
-        todo!()
-    }
+#[derive(Serialize, Deserialize, Error, Debug)]
+pub enum TransactionError {
+    // TODO: add failure cases
 }
-
-// Usage
-// let service = Arc::new(NodeRpcService(NodeRpcImpl));
-// TODO: implement Endpoint for NodeRpcService
-
-// TODO
-// #[async_trait]
-// impl<T: DeserializeOwned + Send + 'static, U: Serialize> melnet::Endpoint<T, U>
-//     for NodeRpcService<S>
-// {
-//     async fn respond(&self, req: melnet::Request<T>) -> anyhow::Result<Vec<u8>> {
-//         todo!()
-//     }
-//}
