@@ -163,5 +163,6 @@ pub trait NodeRpcProtocol {
 
 #[derive(Serialize, Deserialize, Error, Debug)]
 pub enum TransactionError {
-    // TODO: add failure cases
+    RecentlySeen,
+    Duplicate,
 }
