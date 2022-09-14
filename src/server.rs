@@ -1,5 +1,4 @@
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
-
 use async_trait::async_trait;
 use melnet::Request;
 use novasmt::CompressedProof;
@@ -124,3 +123,103 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
         }
     }
 }
+
+// TODO: move this to a more suitable place?
+#[nanorpc_derive]
+#[async_trait]
+pub trait NodeRpcProtocol {
+    async fn request(&self, req: NodeRequest) -> melnet::Result<Vec<u8>>;
+
+    /// Broadcasts a transaction to the network
+    fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> anyhow::Result<()>;
+
+    /// Gets an "abbreviated block"
+    fn get_abbr_block(&self, height: BlockHeight) -> anyhow::Result<(AbbrBlock, ConsensusProof)>;
+
+    /// Gets a state summary
+    fn get_summary(&self) -> anyhow::Result<StateSummary>;
+
+    /// Gets a full state
+    fn get_block(&self, height: BlockHeight) -> anyhow::Result<Block>;
+
+    /// Gets an SMT branch
+    fn get_smt_branch(
+        &self,
+        height: BlockHeight,
+        elem: Substate,
+        key: HashVal,
+    ) -> anyhow::Result<(Vec<u8>, CompressedProof)>;
+
+    /// Gets stakers
+    fn get_stakers_raw(&self, height: BlockHeight) -> anyhow::Result<BTreeMap<HashVal, Vec<u8>>>;
+
+    /// Gets *possibly a subset* of the list of all coins associated with a covenant hash. Can return None if the node simply doesn't index this information.
+    fn get_some_coins(
+        &self,
+        height: BlockHeight,
+        covhash: Address,
+    ) -> anyhow::Result<Option<Vec<CoinID>>> {
+        Ok(None)
+    }
+}
+
+pub struct NodeRpcImpl;
+
+#[async_trait]
+impl NodeRpcProtocol for NodeRpcImpl {
+    fn request(&self) {}
+    async fn send_tx(&self, state: melnet::NetState, tx: Transaction) -> anyhow::Result<()> { todo!()}
+    async fn get_summary(&self) -> anyhow::Result<StateSummary> {todo!()}
+    async fn get_abbr_block(
+        &self,
+        height: BlockHeight,
+    ) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
+        todo!()
+    }
+
+    async fn get_full_block(
+        &self,
+        height: BlockHeight,
+        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
+    ) -> melnet::Result<(Block, ConsensusProof)> {
+        todo!()
+    }
+
+    async fn get_smt_branch(
+        &self,
+        height: BlockHeight,
+        elem: Substate,
+        key: HashVal,
+    ) -> melnet::Result<(Vec<u8>, FullProof)> {
+        todo!()
+    }
+
+    async fn get_stakers_raw(
+        &self,
+        height: BlockHeight,
+    ) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>> {
+        todo!()
+    }
+
+    async fn get_some_coins(
+        &self,
+        height: BlockHeight,
+        owner: Address,
+    ) -> melnet::Result<Option<Vec<CoinID>>> {
+        todo!()
+    }
+}
+
+// Usage
+// let service = Arc::new(NodeRpcService(NodeRpcImpl));
+// TODO: implement Endpoint for NodeRpcService
+
+// TODO
+// #[async_trait]
+// impl<T: DeserializeOwned + Send + 'static, U: Serialize> melnet::Endpoint<T, U>
+//     for NodeRpcService<S>
+// {
+//     async fn respond(&self, req: melnet::Request<T>) -> anyhow::Result<Vec<u8>> {
+//         todo!()
+//     }
+//}
