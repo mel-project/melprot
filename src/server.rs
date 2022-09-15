@@ -84,7 +84,8 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
         let time_key = START.elapsed().as_secs();
         match req.body {
             NodeRequest::SendTx(tx) => {
-                server.send_tx(state, tx)?;
+                s
+erver.send_tx(state, tx)?;
                 Ok(vec![])
             }
             NodeRequest::GetSummary => Ok(self
@@ -130,7 +131,7 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
 
 #[nanorpc_derive]
 #[async_trait]
-pub trait NodeRpcProtocol {
+pub trait NodeRpcProtocol: Send + Sync {
     /// Broadcasts a transaction to the network
     async fn send_tx(&self, tx: Transaction) -> Result<(), TransactionError>;
 
@@ -157,6 +158,57 @@ pub trait NodeRpcProtocol {
     /// Gets *possibly a subset* of the list of all coins associated with a covenant hash. Can return None if the node simply doesn't index this information.
     async fn get_some_coins(&self, _height: BlockHeight, _covhash: Address) -> Option<Vec<CoinID>> {
         None
+    }
+}
+
+impl<T: NodeRpcProtocol> NodeRpcService<T> {
+    // TODO: maybe put get_full_block from `NodeClient` logic here?
+}
+
+#[async_trait]
+impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcService<T> {
+    async fn respond(&self, req: Request<NodeRequest>) -> anyhow::Result<Vec<u8>> {
+        let service = self.0;
+        match req.body {
+            NodeRequest::SendTx(tx) => {
+                service.send_tx(tx).await;
+                Ok(vec![])
+            }
+            NodeRequest::GetSummary => {
+                let summary = service.get_summary().await;
+                Ok::<_, anyhow::Error>(stdcode::serialize(&summary)?)
+            }
+            NodeRequest::GetAbbrBlock(height) => {
+                let block = service.get_abbr_block(height).await;
+                Ok::<_, anyhow::Error>(stdcode::serialize(&block)?)
+            }
+            NodeRequest::GetSmtBranch(height, elem, key) => {
+                let branch = service.get_smt_branch(height, elem, key).await;
+                Ok::<_, anyhow::Error>(stdcode::serialize(&branch)?)
+            }
+            NodeRequest::GetStakersRaw(height) => {
+                Ok(stdcode::serialize(&service.get_stakers_raw(height).await)?)
+            }
+            NodeRequest::GetPartialBlock(height, mut hvv) => {
+                hvv.sort_unstable();
+                let hvv = hvv;
+
+                if let Some(blk) = service.get_block(height).await {
+                    blk.transactions
+                        .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
+                    Ok(stdcode::serialize(&blk)?)
+                } else {
+                    Ok(vec![])
+                }
+            }
+            NodeRequest::GetSomeCoins(height, address) => {
+                if let Some(coins) = service.get_some_coins(height, address).await {
+                    return Ok(stdcode::serialize(&coins)?);
+                } else {
+                    Ok(vec![])
+                }
+            }
+        }
     }
 }
 
