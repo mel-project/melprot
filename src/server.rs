@@ -132,14 +132,13 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
 #[async_trait]
 pub trait NodeRpcProtocol {
     /// Broadcasts a transaction to the network
-    /// NOTE: melnet::NetState was removed as a parameter here, since it's not `Serialize`.
     async fn send_tx(&self, tx: Transaction) -> Result<(), TransactionError>;
 
     /// Gets an "abbreviated block"
     async fn get_abbr_block(&self, height: BlockHeight) -> Option<(AbbrBlock, ConsensusProof)>;
 
     /// Gets a state summary
-    async fn get_summary(&self) -> Option<StateSummary>;
+    async fn get_summary(&self) -> StateSummary;
 
     /// Gets a full state
     async fn get_block(&self, height: BlockHeight) -> Option<Block>;
@@ -166,5 +165,7 @@ pub enum TransactionError {
     #[error("Rejecting recently seen transaction")]
     RecentlySeen,
     #[error("Duplicate transaction")]
-    Duplicate,
+    Duplicate(String),
+    #[error("Storage error")]
+    Storage,
 }
