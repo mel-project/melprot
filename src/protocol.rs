@@ -163,18 +163,13 @@ impl<T: RpcTransport> NodeRpcClient<T> {
         } else {
             unknown.sort_unstable();
             let hvv = unknown;
-            let blk_height = self.get_block(height).await.ok().unwrap();
+            let blk_height = self.get_block(height).await?;
             if let Some(mut blk) = blk_height {
                 blk.transactions
                     .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
                 blk
             } else {
-                // return an empty block here?
-                Block {
-                    header: abbr.header,
-                    transactions: HashSet::new(),
-                    proposer_action: abbr.proposer_action,
-                }
+                return Ok(None);
             }
         };
 
