@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 use melnet::Request;
 use novasmt::CompressedProof;
-use once_cell::sync::Lazy;
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
-    time::Instant,
 };
 use themelio_structs::{
     AbbrBlock, Address, Block, BlockHeight, CoinID, ConsensusProof, Transaction, TxHash,
@@ -13,7 +11,7 @@ use themelio_structs::{
 use thiserror::Error;
 use tmelcrypt::HashVal;
 
-use crate::{cache::AsyncCache, NodeRequest, StateSummary, Substate};
+use crate::{NodeRequest, StateSummary, Substate};
 
 use nanorpc::{nanorpc_derive, RpcTransport};
 use serde::{Deserialize, Serialize};
@@ -56,7 +54,6 @@ pub trait NodeServer: Send + Sync {
 /// This is a melnet responder that wraps a NodeServer.
 pub struct NodeResponder<S: NodeServer + 'static> {
     server: Arc<S>,
-    cache: Arc<AsyncCache>,
 }
 
 impl<S: NodeServer> NodeResponder<S> {
@@ -64,7 +61,6 @@ impl<S: NodeServer> NodeResponder<S> {
     pub fn new(server: S) -> Self {
         Self {
             server: Arc::new(server),
-            cache: Arc::new(AsyncCache::new(1000)),
         }
     }
 }
@@ -73,7 +69,6 @@ impl<S: NodeServer> Clone for NodeResponder<S> {
     fn clone(&self) -> Self {
         Self {
             server: self.server.clone(),
-            cache: self.cache.clone(),
         }
     }
 }
@@ -84,43 +79,25 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
         let state = req.state.clone();
         let server = self.server.clone();
 
-        static START: Lazy<std::time::Instant> = Lazy::new(Instant::now);
-        let time_key = START.elapsed().as_secs();
         match req.body {
             NodeRequest::SendTx(tx) => {
                 server.send_tx(state, tx)?;
                 Ok(vec![])
             }
-            NodeRequest::GetSummary => Ok(self
-                .cache
-                .get_or_try_fill((time_key, "summary"), async {
-                    Ok::<_, anyhow::Error>(stdcode::serialize(&server.get_summary()?)?)
-                })
-                .await?),
-            NodeRequest::GetAbbrBlock(height) => Ok(self
-                .cache
-                .get_or_try_fill((height, "abbr_block"), async {
-                    Ok::<_, anyhow::Error>(stdcode::serialize(&server.get_abbr_block(height)?)?)
-                })
-                .await?),
-            NodeRequest::GetSmtBranch(height, elem, key) => Ok(self
-                .cache
-                .get_or_try_fill((height, elem, key, "smt_branch"), async {
-                    Ok::<_, anyhow::Error>(stdcode::serialize(
-                        &server.get_smt_branch(height, elem, key)?,
-                    )?)
-                })
-                .await?),
+            NodeRequest::GetSummary => Ok(stdcode::serialize(&server.get_summary()?)?),
+            NodeRequest::GetAbbrBlock(height) => {
+                Ok(stdcode::serialize(&server.get_abbr_block(height)?)?)
+            }
+            NodeRequest::GetSmtBranch(height, elem, key) => Ok(stdcode::serialize(
+                &server.get_smt_branch(height, elem, key)?,
+            )?),
             NodeRequest::GetStakersRaw(height) => {
                 Ok(stdcode::serialize(&server.get_stakers_raw(height)?)?)
             }
             NodeRequest::GetPartialBlock(height, mut hvv) => {
                 hvv.sort_unstable();
                 let hvv = hvv;
-                let mut blk: Block = self
-                    .cache
-                    .get_or_try_fill((height, "block"), async { server.get_block(height) })
-                    .await?;
+                let mut blk: Block = server.get_block(height)?;
                 blk.transactions
                     .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
                 Ok(stdcode::serialize(&blk)?)
