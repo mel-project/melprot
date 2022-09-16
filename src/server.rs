@@ -2,16 +2,20 @@ use async_trait::async_trait;
 use melnet::Request;
 use novasmt::CompressedProof;
 use once_cell::sync::Lazy;
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 use themelio_structs::{
-    AbbrBlock, Address, Block, BlockHeight, CoinID, ConsensusProof, Transaction,
+    AbbrBlock, Address, Block, BlockHeight, CoinID, ConsensusProof, Transaction, TxHash,
 };
 use thiserror::Error;
 use tmelcrypt::HashVal;
 
 use crate::{cache::AsyncCache, NodeRequest, StateSummary, Substate};
 
-use nanorpc::nanorpc_derive;
+use nanorpc::{nanorpc_derive, RpcTransport};
 use serde::{Deserialize, Serialize};
 
 /// This trait represents a server of Themelio's node protocol. Actual nodes should implement this.
@@ -84,8 +88,7 @@ impl<S: NodeServer> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeResponder<S> 
         let time_key = START.elapsed().as_secs();
         match req.body {
             NodeRequest::SendTx(tx) => {
-                s
-erver.send_tx(state, tx)?;
+                server.send_tx(state, tx)?;
                 Ok(vec![])
             }
             NodeRequest::GetSummary => Ok(self
@@ -161,17 +164,70 @@ pub trait NodeRpcProtocol: Send + Sync {
     }
 }
 
-impl<T: NodeRpcProtocol> NodeRpcService<T> {
-    // TODO: maybe put get_full_block from `NodeClient` logic here?
+impl<T: RpcTransport> NodeRpcClient<T> {
+    /// Gets a full block, given a function that tells known from unknown transactions.
+    pub async fn get_full_block(
+        &self,
+        height: BlockHeight,
+        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
+    ) -> Option<(Block, ConsensusProof)> {
+        // TODO: find a better way to do this!
+        let (abbr, cproof) = self.get_abbr_block(height).await.ok().unwrap().unwrap();
+
+        let mut known = vec![];
+        let mut unknown = vec![];
+        for txhash in abbr.txhashes.iter() {
+            if let Some(tx) = get_known_tx(*txhash) {
+                known.push(tx);
+            } else {
+                unknown.push(*txhash);
+            }
+        }
+
+        // send off a request
+        let mut response: Block = if unknown.is_empty() {
+            Block {
+                header: abbr.header,
+                transactions: HashSet::new(),
+                proposer_action: abbr.proposer_action,
+            }
+        } else {
+            unknown.sort_unstable();
+            let hvv = unknown;
+            let blk_height = self.get_block(height).await.ok().unwrap();
+            if let Some(mut blk) = blk_height {
+                blk.transactions
+                    .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
+                blk
+            } else {
+                // return an empty block here?
+                Block {
+                    header: abbr.header,
+                    transactions: HashSet::new(),
+                    proposer_action: abbr.proposer_action,
+                }
+            }
+        };
+
+        for known in known {
+            response.transactions.insert(known);
+        }
+        let new_abbr = response.abbreviate();
+        if new_abbr.header != abbr.header || new_abbr.txhashes != abbr.txhashes {
+            log::error!("Mismatched abbreviation");
+            return None;
+        }
+        Some((response, cproof))
+    }
 }
 
 #[async_trait]
 impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcService<T> {
     async fn respond(&self, req: Request<NodeRequest>) -> anyhow::Result<Vec<u8>> {
-        let service = self.0;
+        let service = &self.0;
         match req.body {
             NodeRequest::SendTx(tx) => {
-                service.send_tx(tx).await;
+                let _ = service.send_tx(tx).await;
                 Ok(vec![])
             }
             NodeRequest::GetSummary => {
@@ -193,7 +249,7 @@ impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcServi
                 hvv.sort_unstable();
                 let hvv = hvv;
 
-                if let Some(blk) = service.get_block(height).await {
+                if let Some(mut blk) = service.get_block(height).await {
                     blk.transactions
                         .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
                     Ok(stdcode::serialize(&blk)?)
