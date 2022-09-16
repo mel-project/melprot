@@ -61,63 +61,6 @@ pub trait NodeRpcProtocol: Send + Sync {
     }
 }
 
-impl<T: RpcTransport> NodeRpcClient<T> {
-    /// Gets a full block, given a function that tells known from unknown transactions.
-    pub async fn get_full_block(
-        &self,
-        height: BlockHeight,
-        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
-    ) -> Option<(Block, ConsensusProof)> {
-        // TODO: find a better way to do this!
-        let (abbr, cproof) = self.get_abbr_block(height).await.ok().unwrap().unwrap();
-
-        let mut known = vec![];
-        let mut unknown = vec![];
-        for txhash in abbr.txhashes.iter() {
-            if let Some(tx) = get_known_tx(*txhash) {
-                known.push(tx);
-            } else {
-                unknown.push(*txhash);
-            }
-        }
-
-        // send off a request
-        let mut response: Block = if unknown.is_empty() {
-            Block {
-                header: abbr.header,
-                transactions: HashSet::new(),
-                proposer_action: abbr.proposer_action,
-            }
-        } else {
-            unknown.sort_unstable();
-            let hvv = unknown;
-            let blk_height = self.get_block(height).await.ok().unwrap();
-            if let Some(mut blk) = blk_height {
-                blk.transactions
-                    .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
-                blk
-            } else {
-                // return an empty block here?
-                Block {
-                    header: abbr.header,
-                    transactions: HashSet::new(),
-                    proposer_action: abbr.proposer_action,
-                }
-            }
-        };
-
-        for known in known {
-            response.transactions.insert(known);
-        }
-        let new_abbr = response.abbreviate();
-        if new_abbr.header != abbr.header || new_abbr.txhashes != abbr.txhashes {
-            log::error!("Mismatched abbreviation");
-            return None;
-        }
-        Some((response, cproof))
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum NodeRequest {
@@ -186,4 +129,58 @@ pub enum TransactionError {
     Duplicate(String),
     #[error("Storage error")]
     Storage,
+}
+
+impl<T: RpcTransport> NodeRpcClient<T> {
+    /// Gets a full block, given a function that tells known from unknown transactions.
+    pub async fn get_full_block(
+        &self,
+        height: BlockHeight,
+        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
+    ) -> Result<Option<(Block, ConsensusProof)>, NodeRpcError<T::Error>> {
+        let (abbr, cproof) = match self.get_abbr_block(height).await? {
+            Some(v) => v,
+            None => return Ok(None), // No such block
+        };
+
+        let mut known = vec![];
+        let mut unknown = vec![];
+        for txhash in abbr.txhashes.iter() {
+            if let Some(tx) = get_known_tx(*txhash) {
+                known.push(tx);
+            } else {
+                unknown.push(*txhash);
+            }
+        }
+
+        // send off a request
+        let mut response: Block = if unknown.is_empty() {
+            Block {
+                header: abbr.header,
+                transactions: HashSet::new(),
+                proposer_action: abbr.proposer_action,
+            }
+        } else {
+            unknown.sort_unstable();
+            let hvv = unknown;
+            let blk_height = self.get_block(height).await.ok().unwrap();
+            if let Some(mut blk) = blk_height {
+                blk.transactions
+                    .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
+                blk
+            } else {
+                // return an empty block here?
+                Block {
+                    header: abbr.header,
+                    transactions: HashSet::new(),
+                    proposer_action: abbr.proposer_action,
+                }
+            }
+        };
+
+        for known in known {
+            response.transactions.insert(known);
+        }
+        Ok(Some((response, cproof)))
+    }
 }
