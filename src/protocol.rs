@@ -85,15 +85,15 @@ impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcServi
             }
             NodeRequest::GetSummary => {
                 let summary = service.get_summary().await;
-                Ok::<_, anyhow::Error>(stdcode::serialize(&summary)?)
+                Ok(stdcode::serialize(&summary)?)
             }
             NodeRequest::GetAbbrBlock(height) => {
                 let block = service.get_abbr_block(height).await;
-                Ok::<_, anyhow::Error>(stdcode::serialize(&block)?)
+                Ok(stdcode::serialize(&block)?)
             }
             NodeRequest::GetSmtBranch(height, elem, key) => {
                 let branch = service.get_smt_branch(height, elem, key).await;
-                Ok::<_, anyhow::Error>(stdcode::serialize(&branch)?)
+                Ok(stdcode::serialize(&branch)?)
             }
             NodeRequest::GetStakersRaw(height) => {
                 Ok(stdcode::serialize(&service.get_stakers_raw(height).await)?)
