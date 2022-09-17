@@ -1,32 +1,28 @@
 use anyhow::Context;
 // use anyhow::Context;
-use async_recursion::async_recursion;
+
 use derivative::Derivative;
-use melnet::MelnetError;
-use nanorpc::RpcTransport;
-use novasmt::{CompressedProof, Database, FullProof, InMemoryCas, Tree};
+
+use nanorpc::{DynRpcTransport, RpcTransport};
+use novasmt::{Database, InMemoryCas, Tree};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
 use smol::Task;
 use std::{
     collections::{BTreeMap, HashSet},
-    net::SocketAddr,
     str::FromStr,
     sync::Arc,
     time::Instant,
 };
 
 use themelio_structs::{
-    AbbrBlock, Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof,
-    Header, NetID, PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
+    Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
+    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
 
-use crate::{
-    cache::AsyncCache, InMemoryTrustStore, NodeRequest, NodeRpcClient, NodeRpcError, StateSummary,
-    Substate,
-};
+use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate};
 
 #[derive(Debug, Clone)]
 pub struct TrustedHeight {
@@ -70,9 +66,6 @@ pub trait TrustStore {
     fn get(&self, netid: NetID) -> Option<TrustedHeight>;
 }
 
-/// A type-erased RPC transport
-type ErasedRpcTransport = Arc<dyn RpcTransport<Error = anyhow::Error>>;
-
 /// A higher-level client that validates all information.
 #[derive(Derivative)]
 #[derivative(Debug, Clone(bound = ""))]
@@ -83,12 +76,15 @@ pub struct ValClient<T = InMemoryTrustStore> {
     cache: Arc<AsyncCache>,
 
     #[derivative(Debug = "ignore")]
-    raw: Arc<NodeRpcClient<ErasedRpcTransport>>,
+    raw: Arc<NodeRpcClient<DynRpcTransport>>,
 }
 
 impl ValClient<InMemoryTrustStore> {
     /// Creates a new ValClient, hardcoding the default, in-memory trust store.
-    pub fn new(netid: NetID, remote: SocketAddr) -> Self {
+    pub fn new<Net: RpcTransport>(netid: NetID, remote: NodeRpcClient<Net>) -> Self
+    where
+        Net::Error: Into<anyhow::Error>,
+    {
         Self::new_with_truststore(netid, remote, InMemoryTrustStore::new())
     }
 }
@@ -109,12 +105,19 @@ fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
 
 impl<T: TrustStore + Send + Sync + 'static> ValClient<T> {
     /// Creates a new ValClient.
-    pub fn new_with_truststore(netid: NetID, remote: SocketAddr, trust_store: T) -> Self {
+    pub fn new_with_truststore<Net: RpcTransport>(
+        netid: NetID,
+        remote: NodeRpcClient<Net>,
+        trust_store: T,
+    ) -> Self
+    where
+        Net::Error: Into<anyhow::Error>,
+    {
         Self {
             netid,
             trust_store: trust_store.into(),
             cache: Arc::new(AsyncCache::new(10000)),
-            raw: todo!(),
+            raw: NodeRpcClient(DynRpcTransport::new(remote.0)).into(),
         }
     }
 
@@ -130,7 +133,7 @@ impl<T: TrustStore + Send + Sync + 'static> ValClient<T> {
 
     /// Obtains a validated snapshot based on what height was trusted.
     pub async fn snapshot(&self) -> Result<ValClientSnapshot, ValClientError> {
-        let c = self.raw.clone();
+        let _c = self.raw.clone();
 
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
         // cache key: current time, divided by 10 seconds
@@ -305,13 +308,13 @@ impl<T: TrustStore + Send + Sync + 'static> ValClient<T> {
 pub struct ValClientSnapshot {
     height: BlockHeight,
     header: Header,
-    raw: Arc<NodeRpcClient<ErasedRpcTransport>>,
+    raw: Arc<NodeRpcClient<DynRpcTransport>>,
     cache: Arc<AsyncCache>,
 }
 
 impl ValClientSnapshot {
     /// Gets a reference to the raw, unvalidating raw client.
-    pub fn get_raw(&self) -> &NodeRpcClient<ErasedRpcTransport> {
+    pub fn get_raw(&self) -> &NodeRpcClient<DynRpcTransport> {
         &self.raw
     }
 
