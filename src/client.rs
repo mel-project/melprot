@@ -1,32 +1,28 @@
 use anyhow::Context;
 // use anyhow::Context;
-use async_recursion::async_recursion;
+
 use derivative::Derivative;
-use melnet::MelnetError;
+
 use nanorpc::RpcTransport;
-use novasmt::{CompressedProof, Database, FullProof, InMemoryCas, Tree};
+use novasmt::{Database, InMemoryCas, Tree};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
 use smol::Task;
 use std::{
     collections::{BTreeMap, HashSet},
-    net::SocketAddr,
     str::FromStr,
     sync::Arc,
     time::Instant,
 };
 
 use themelio_structs::{
-    AbbrBlock, Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof,
-    Header, NetID, PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
+    Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
+    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
 
-use crate::{
-    cache::AsyncCache, InMemoryTrustStore, NodeRequest, NodeRpcClient, NodeRpcError, StateSummary,
-    Substate,
-};
+use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate};
 
 #[derive(Debug, Clone)]
 pub struct TrustedHeight {
@@ -85,7 +81,7 @@ pub struct ValClient<Net: RpcTransport, T = InMemoryTrustStore> {
 
 impl<Net: RpcTransport> ValClient<Net, InMemoryTrustStore> {
     /// Creates a new ValClient, hardcoding the default, in-memory trust store.
-    pub fn new(netid: NetID, remote: SocketAddr) -> Self {
+    pub fn new(netid: NetID, remote: NodeRpcClient<Net>) -> Self {
         Self::new_with_truststore(netid, remote, InMemoryTrustStore::new())
     }
 }
@@ -108,7 +104,7 @@ fn to_neterr<E>(e: NodeRpcError<E>) -> ValClientError<E> {
         NodeRpcError::ServerFail => ValClientError::InvalidResponse(anyhow::anyhow!(
             "RPC returned a garbage error even though this method is not fallible"
         )),
-        NodeRpcError::FailedDecode(s) => ValClientError::InvalidResponse(anyhow::anyhow!(
+        NodeRpcError::FailedDecode(_s) => ValClientError::InvalidResponse(anyhow::anyhow!(
             "RPC returned an object of the wrong shape"
         )),
         NodeRpcError::Transport(e) => ValClientError::NetworkError(e),
@@ -117,12 +113,12 @@ fn to_neterr<E>(e: NodeRpcError<E>) -> ValClientError<E> {
 
 impl<Net: RpcTransport, T: TrustStore + Send + Sync + 'static> ValClient<Net, T> {
     /// Creates a new ValClient.
-    pub fn new_with_truststore(netid: NetID, remote: SocketAddr, trust_store: T) -> Self {
+    pub fn new_with_truststore(netid: NetID, remote: NodeRpcClient<Net>, trust_store: T) -> Self {
         Self {
             netid,
             trust_store: trust_store.into(),
             cache: Arc::new(AsyncCache::new(10000)),
-            raw: todo!(),
+            raw: remote.into(),
         }
     }
 
@@ -138,7 +134,7 @@ impl<Net: RpcTransport, T: TrustStore + Send + Sync + 'static> ValClient<Net, T>
 
     /// Obtains a validated snapshot based on what height was trusted.
     pub async fn snapshot(&self) -> Result<ValClientSnapshot<Net>, ValClientError<Net::Error>> {
-        let c = self.raw.clone();
+        let _c = self.raw.clone();
 
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
         // cache key: current time, divided by 10 seconds
