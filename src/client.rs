@@ -1,10 +1,13 @@
+use anyhow::Context;
 // use anyhow::Context;
 use async_recursion::async_recursion;
 use derivative::Derivative;
 use melnet::MelnetError;
+use nanorpc::RpcTransport;
 use novasmt::{CompressedProof, Database, FullProof, InMemoryCas, Tree};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
+use smol::Task;
 use std::{
     collections::{BTreeMap, HashSet},
     net::SocketAddr,
@@ -20,7 +23,10 @@ use themelio_structs::{
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
 
-use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRequest, StateSummary, Substate};
+use crate::{
+    cache::AsyncCache, InMemoryTrustStore, NodeRequest, NodeRpcClient, NodeRpcError, StateSummary,
+    Substate,
+};
 
 #[derive(Debug, Clone)]
 pub struct TrustedHeight {
@@ -64,15 +70,20 @@ pub trait TrustStore {
     fn get(&self, netid: NetID) -> Option<TrustedHeight>;
 }
 
+/// A type-erased RPC transport
+type ErasedRpcTransport = Arc<dyn RpcTransport<Error = anyhow::Error>>;
+
 /// A higher-level client that validates all information.
-#[derive(Clone, Derivative)]
-#[derivative(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug, Clone(bound = ""))]
 pub struct ValClient<T = InMemoryTrustStore> {
     netid: NetID,
-    raw: NodeClient,
-    trust_store: T,
+    trust_store: Arc<T>,
     #[derivative(Debug = "ignore")]
     cache: Arc<AsyncCache>,
+
+    #[derivative(Debug = "ignore")]
+    raw: Arc<NodeRpcClient<ErasedRpcTransport>>,
 }
 
 impl ValClient<InMemoryTrustStore> {
@@ -82,15 +93,28 @@ impl ValClient<InMemoryTrustStore> {
     }
 }
 
-impl<T: TrustStore + Send + Sync> ValClient<T> {
+/// Errors that a ValClient may return
+#[derive(Error, Debug)]
+pub enum ValClientError {
+    #[error("state validation error: {0}")]
+    InvalidState(anyhow::Error),
+    #[error("error during network communication: {0}")]
+    NetworkError(anyhow::Error),
+}
+
+fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
+    // TODO something a little more intelligent
+    ValClientError::NetworkError(anyhow::anyhow!("{}", e.to_string()))
+}
+
+impl<T: TrustStore + Send + Sync + 'static> ValClient<T> {
     /// Creates a new ValClient.
     pub fn new_with_truststore(netid: NetID, remote: SocketAddr, trust_store: T) -> Self {
-        let raw = NodeClient::new(netid, remote);
         Self {
             netid,
-            raw,
-            trust_store,
+            trust_store: trust_store.into(),
             cache: Arc::new(AsyncCache::new(10000)),
+            raw: todo!(),
         }
     }
 
@@ -104,32 +128,17 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
         self.trust_store.set(self.netid, trusted);
     }
 
-    /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
-    #[deprecated]
-    pub async fn insecure_latest_snapshot(&self) -> melnet::Result<ValClientSnapshot> {
-        self.trust_latest().await?;
-        self.snapshot().await
-    }
-
-    // trust latest height
-    async fn trust_latest(&self) -> melnet::Result<()> {
-        let summary = self.raw.get_summary().await?;
-        self.trust(TrustedHeight {
-            height: summary.height,
-            header_hash: summary.header.hash(),
-        });
-        Ok(())
-    }
-
     /// Obtains a validated snapshot based on what height was trusted.
-    pub async fn snapshot(&self) -> melnet::Result<ValClientSnapshot> {
+    pub async fn snapshot(&self) -> Result<ValClientSnapshot, ValClientError> {
+        let c = self.raw.clone();
+
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
         // cache key: current time, divided by 10 seconds
         let cache_key = INCEPTION.elapsed().as_secs() / 10;
         let (height, header, _) = self
             .cache
             .get_or_try_fill((cache_key, "summary"), async {
-                let summary = self.raw.get_summary().await?;
+                let summary = self.raw.get_summary().await.map_err(to_neterr)?;
                 self.validate_height(summary.height, summary.header, summary.proof.clone())
                     .await?;
                 Ok((summary.height, summary.header, summary.proof))
@@ -144,95 +153,132 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
     }
 
     /// Convenience function to obtains a validated snapshot based on a given height.
-    pub async fn older_snapshot(&self, height: BlockHeight) -> melnet::Result<ValClientSnapshot> {
+    pub async fn older_snapshot(
+        &self,
+        height: BlockHeight,
+    ) -> Result<ValClientSnapshot, ValClientError> {
         let snap = self.snapshot().await?;
         snap.get_older(height).await
     }
 
     /// Helper to validate a given block height and header.
-    #[async_recursion]
-    async fn validate_height(
+    // #[async_recursion]
+    fn validate_height(
         &self,
         height: BlockHeight,
         header: Header,
         proof: ConsensusProof,
-    ) -> melnet::Result<()> {
-        let safe_stakers = {
-            loop {
-                let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
-                if height.epoch() > safe_height.epoch() + 1 {
-                    log::error!(
+    ) -> Task<Result<(), ValClientError>> {
+        let this = self.clone();
+        smolscale::spawn(async move {
+            let safe_stakers = {
+                loop {
+                    let (safe_height, safe_stakers) = this.get_trusted_stakers().await?;
+                    if height.epoch() > safe_height.epoch() + 1 {
+                        log::error!(
                     "OUTDATED CHECKPOINT: trusted height {} in epoch {} but remote height {} in epoch {}. Continuing with best-effort to update checkpoint",
                     safe_height,
                     safe_height.epoch(),
                     height,
                     height.epoch()
                 );
-                    // Okay, we must recurse to one epoch ago now
-                    let old_height = BlockHeight(height.0.saturating_sub(STAKE_EPOCH));
-                    let (old_block, old_proof) = self.raw.get_abbr_block(old_height).await?;
-                    self.validate_height(old_height, old_block.header, old_proof)
-                        .await?;
-                } else if height.epoch() > safe_height.epoch()
-                    && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
-                {
-                    // to cross the epoch, we must obtain the epoch-terminal snapshot first.
-                    // this places the correct thing in the cache, which then lets this one verify too.
-                    let epoch_ending_height =
-                        BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
-                    let (old_block, old_proof) =
-                        self.raw.get_abbr_block(epoch_ending_height).await?;
-                    self.validate_height(epoch_ending_height, old_block.header, old_proof)
-                        .await?;
-                } else {
-                    break safe_stakers;
+                        // Okay, we must recurse to one epoch ago now
+                        let old_height = BlockHeight(height.0.saturating_sub(STAKE_EPOCH));
+                        let (old_block, old_proof) = this
+                            .raw
+                            .get_abbr_block(old_height)
+                            .await
+                            .map_err(to_neterr)?
+                            .ok_or_else(|| {
+                                ValClientError::InvalidState(anyhow::anyhow!(
+                                    "old block gone while validating height"
+                                ))
+                            })?;
+                        this.validate_height(old_height, old_block.header, old_proof)
+                            .await?;
+                    } else if height.epoch() > safe_height.epoch()
+                        && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
+                    {
+                        // to cross the epoch, we must obtain the epoch-terminal snapshot first.
+                        // this places the correct thing in the cache, which then lets this one verify too.
+                        let epoch_ending_height =
+                            BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
+                        let (old_block, old_proof) = this
+                            .raw
+                            .get_abbr_block(epoch_ending_height)
+                            .await
+                            .map_err(to_neterr)?
+                            .context("old abbr block gone while validating height")
+                            .map_err(ValClientError::InvalidState)?;
+                        this.validate_height(epoch_ending_height, old_block.header, old_proof)
+                            .await?;
+                    } else {
+                        break safe_stakers;
+                    }
                 }
-            }
-        };
-        // we use the stakers to validate the latest summary
-        let mut good_votes = CoinValue(0);
-        let mut total_votes = CoinValue(0);
-        for (_, doc) in safe_stakers.iter() {
-            let doc: StakeDoc =
-                stdcode::deserialize(&doc).map_err(|e| MelnetError::Custom(format!("{:?}", e)))?;
-            if height.epoch() >= doc.e_start && height.epoch() < doc.e_post_end {
-                total_votes += doc.syms_staked;
-                if let Some(sig) = proof.get(&doc.pubkey) {
-                    if doc.pubkey.verify(&header.hash(), sig) {
-                        good_votes += doc.syms_staked
+            };
+            // we use the stakers to validate the latest summary
+            let mut good_votes = CoinValue(0);
+            let mut total_votes = CoinValue(0);
+            for (_, doc) in safe_stakers.iter() {
+                let doc: StakeDoc = stdcode::deserialize(&doc)
+                    .context("cannot deserialize stakedoc")
+                    .map_err(ValClientError::InvalidState)?;
+                if height.epoch() >= doc.e_start && height.epoch() < doc.e_post_end {
+                    total_votes += doc.syms_staked;
+                    if let Some(sig) = proof.get(&doc.pubkey) {
+                        if doc.pubkey.verify(&header.hash(), sig) {
+                            good_votes += doc.syms_staked
+                        }
                     }
                 }
             }
-        }
 
-        if good_votes < total_votes * 2 / 3 {
-            return Err(MelnetError::Custom(format!(
-                "remote height {} has insufficient votes (total_votes = {}, good_votes = {})",
-                height, total_votes, good_votes
-            )));
-        }
-        // automatically update trust
-        self.trust(TrustedHeight {
-            height,
-            header_hash: header.hash(),
-        });
-        Ok(())
+            if good_votes < total_votes * 2 / 3 {
+                return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                    "remote height {} has insufficient votes (total_votes = {}, good_votes = {})",
+                    height,
+                    total_votes,
+                    good_votes
+                )));
+            }
+            // automatically update trust
+            this.trust(TrustedHeight {
+                height,
+                header_hash: header.hash(),
+            });
+            Ok(())
+        })
     }
 
     /// Helper function to obtain the trusted staker set.
-    async fn get_trusted_stakers(&self) -> melnet::Result<(BlockHeight, Tree<InMemoryCas>)> {
-        let checkpoint = self.trust_store.get(self.netid).ok_or_else(|| {
-            MelnetError::Custom(
-                "Expected to find a trusted block when fetching trusted stakers".into(),
-            )
-        })?;
+    async fn get_trusted_stakers(
+        &self,
+    ) -> Result<(BlockHeight, Tree<InMemoryCas>), ValClientError> {
+        let checkpoint = self
+            .trust_store
+            .get(self.netid)
+            .context("expected to find a trusted block while fetching trusted stakers")
+            .map_err(ValClientError::InvalidState)?;
 
         let temp_forest = Database::new(InMemoryCas::default());
-        let stakers = self.raw.get_stakers_raw(checkpoint.height).await?;
+        let stakers = self
+            .raw
+            .get_stakers_raw(checkpoint.height)
+            .await
+            .map_err(to_neterr)?
+            .context("server did not give us the stakers for the height")
+            .map_err(ValClientError::InvalidState)?;
         // first obtain trusted SMT branch
-        let (abbr_block, _) = self.raw.get_abbr_block(checkpoint.height).await?;
+        let (abbr_block, _) = self
+            .raw
+            .get_abbr_block(checkpoint.height)
+            .await
+            .map_err(to_neterr)?
+            .context("server did not give us the abbr block for the height")
+            .map_err(ValClientError::InvalidState)?;
         if abbr_block.header.hash() != checkpoint.header_hash {
-            return Err(MelnetError::Custom(format!(
+            return Err(ValClientError::InvalidState(anyhow::anyhow!(
                 "remote block contradicted trusted block hash: trusted {}, yet got {}:{}:{}",
                 checkpoint.header_hash,
                 checkpoint.height,
@@ -246,9 +292,9 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
             mapping.insert(k.0, &v);
         }
         if mapping.root_hash() != trusted_stake_hash.0 {
-            return Err(MelnetError::Custom(
-                "remote staker set contradicted valid header".into(),
-            ));
+            return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                "remote staker set contradicted valid header"
+            )));
         }
         Ok((checkpoint.height, mapping))
     }
@@ -259,20 +305,22 @@ impl<T: TrustStore + Send + Sync> ValClient<T> {
 pub struct ValClientSnapshot {
     height: BlockHeight,
     header: Header,
-    raw: NodeClient,
+    raw: Arc<NodeRpcClient<ErasedRpcTransport>>,
     cache: Arc<AsyncCache>,
 }
 
 impl ValClientSnapshot {
     /// Gets a reference to the raw, unvalidating raw client.
-    pub fn get_raw(&self) -> &NodeClient {
+    pub fn get_raw(&self) -> &NodeRpcClient<ErasedRpcTransport> {
         &self.raw
     }
 
     /// Gets an older snapshot.
-    pub async fn get_older(&self, old_height: BlockHeight) -> melnet::Result<Self> {
+    pub async fn get_older(&self, old_height: BlockHeight) -> Result<Self, ValClientError> {
         if old_height > self.height {
-            return Err(MelnetError::Custom("cannot travel into the future".into()));
+            return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                "cannot travel into the future"
+            )));
         }
         if old_height == self.height {
             return Ok(self.clone());
@@ -287,10 +335,10 @@ impl ValClientSnapshot {
                         tmelcrypt::hash_single(&stdcode::serialize(&old_height).unwrap()),
                     )
                     .await?;
-                let old_elem: Header = stdcode::deserialize(&val).map_err(|e| {
-                    MelnetError::Custom(format!("could not deserialize old header: {}", e))
-                })?;
-                Ok::<_, melnet::MelnetError>(old_elem)
+                let old_elem: Header = stdcode::deserialize(&val)
+                    .context("cannot deserialize header")
+                    .map_err(ValClientError::InvalidState)?;
+                Ok::<_, ValClientError>(old_elem)
             })
             .await?;
         // this can never possibly be bad unless everything is horribly untrustworthy
@@ -309,60 +357,73 @@ impl ValClientSnapshot {
     }
 
     /// Helper function to obtain the proposer reward amount.
-    pub async fn get_proposer_reward(&self) -> melnet::Result<CoinValue> {
+    pub async fn get_proposer_reward(&self) -> Result<CoinValue, ValClientError> {
         let reward_coin = self.get_coin(CoinID::proposer_reward(self.height)).await?;
         let reward_amount = reward_coin.map(|v| v.coin_data.value).unwrap_or_default();
         Ok(reward_amount)
     }
 
     /// Gets the whole block at this height.
-    pub async fn current_block(&self) -> melnet::Result<Block> {
-        self.cache
-            .get_or_try_fill(("block", self.height), async {
-                let header = self.current_header();
-                let (block, _) = get_full_block(self.raw.clone(), self.height).await?;
-                if block.header != header {
-                    return Err(MelnetError::Custom("block header does not match".into()));
-                }
-                Ok(block)
-            })
-            .await
+    pub async fn current_block(&self) -> Result<Block, ValClientError> {
+        self.current_block_with_known(|_| None).await
     }
 
     /// Gets the whole block at this height, with a function that gets cached transactions.
     pub async fn current_block_with_known(
         &self,
         get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
-    ) -> melnet::Result<Block> {
-        let header = self.current_header();
-        let (block, _) = self.raw.get_full_block(header.height, get_known_tx).await?;
-        if block.header != header {
-            return Err(MelnetError::Custom("block header does not match".into()));
-        }
-        Ok(block)
+    ) -> Result<Block, ValClientError> {
+        self.cache
+            .get_or_try_fill(("block", self.height), async {
+                let header = self.current_header();
+                let (block, _) = self
+                    .raw
+                    .get_full_block(self.height, get_known_tx)
+                    .await
+                    .map_err(to_neterr)?
+                    .context("block disappeared from under our feet")
+                    .map_err(ValClientError::InvalidState)?;
+                if block.header != header {
+                    return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                        "block header does not match: block header {:?} vs snapshot header {:?}",
+                        block.header,
+                        header
+                    )));
+                }
+                Ok(block)
+            })
+            .await
     }
 
     /// Gets a historical header.
-    pub async fn get_history(&self, height: BlockHeight) -> melnet::Result<Option<Header>> {
+    pub async fn get_history(&self, height: BlockHeight) -> Result<Option<Header>, ValClientError> {
         self.get_smt_value_serde(Substate::History, height).await
     }
 
     /// Gets a coin.
-    pub async fn get_coin(&self, coinid: CoinID) -> melnet::Result<Option<CoinDataHeight>> {
+    pub async fn get_coin(&self, coinid: CoinID) -> Result<Option<CoinDataHeight>, ValClientError> {
         self.get_smt_value_serde(Substate::Coins, coinid).await
     }
 
     /// Gets a coin count.
-    pub async fn get_coin_count(&self, covhash: Address) -> melnet::Result<Option<u64>> {
+    pub async fn get_coin_count(&self, covhash: Address) -> Result<Option<u64>, ValClientError> {
         let val = self
             .get_smt_value(Substate::Coins, covhash.0.hash_keyed(b"coin_count"))
             .await?;
         if val.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(stdcode::deserialize(&val).map_err(|e| {
-                MelnetError::Custom(format!("bad coin count {:?} {:?}", val, e.to_string()))
-            })?))
+            Ok(Some(
+                stdcode::deserialize(&val)
+                    .context("bad error count")
+                    .map_err(|e| {
+                        ValClientError::InvalidState(anyhow::anyhow!(
+                            "bad coin count {:?} {:?}",
+                            val,
+                            e.to_string()
+                        ))
+                    })?,
+            ))
         }
     }
 
@@ -370,16 +431,20 @@ impl ValClientSnapshot {
     pub async fn get_coins(
         &self,
         covhash: Address,
-    ) -> melnet::Result<Option<BTreeMap<CoinID, CoinDataHeight>>> {
+    ) -> Result<Option<BTreeMap<CoinID, CoinDataHeight>>, ValClientError> {
         self.cache
             .get_or_try_fill(("coins", self.height, covhash), async {
-                let coins = self.raw.get_some_coins(self.height, covhash).await?;
+                let coins = self
+                    .raw
+                    .get_some_coins(self.height, covhash)
+                    .await
+                    .map_err(to_neterr)?;
                 if let Some(coins) = coins {
                     let coins: HashSet<CoinID> = coins.into_iter().collect();
                     let count = self.get_coin_count(covhash).await?;
                     if let Some(count) = count {
                         if count != coins.len() as u64 {
-                            return Err(MelnetError::Custom(format!(
+                            return Err(ValClientError::InvalidState(anyhow::anyhow!(
                                 "got incomplete list of {} coins rather than {}",
                                 coins.len(),
                                 count
@@ -390,13 +455,15 @@ impl ValClientSnapshot {
                     let mut coin_futs = BTreeMap::new();
                     for coin in coins {
                         let this = self.clone();
-                        let fut_data = smolscale::spawn(async move {
+                        // TODO spawn this somewhere for parallelness
+                        let fut_data = async move {
                             let r = this
                                 .get_coin(coin)
                                 .await?
-                                .expect("invalid data received while getting coin list");
-                            Ok::<_, melnet::MelnetError>(r)
-                        });
+                                .context("invalid data received while getting coin list")
+                                .map_err(ValClientError::InvalidState)?;
+                            Ok::<_, ValClientError>(r)
+                        };
                         coin_futs.insert(coin, fut_data);
                     }
                     let mut toret = BTreeMap::new();
@@ -417,7 +484,7 @@ impl ValClientSnapshot {
     pub async fn get_coin_spent_here(
         &self,
         coinid: CoinID,
-    ) -> melnet::Result<Option<CoinDataHeight>> {
+    ) -> Result<Option<CoinDataHeight>, ValClientError> {
         // First we try the transactions mapping in this block.
         if let Some(tx) = self.get_transaction(coinid.txhash).await? {
             // Great. Now we can reconstruct the CDH from the transaction.
@@ -437,18 +504,24 @@ impl ValClientSnapshot {
     }
 
     /// Gets a pool info.
-    pub async fn get_pool(&self, denom: PoolKey) -> melnet::Result<Option<PoolState>> {
+    pub async fn get_pool(&self, denom: PoolKey) -> Result<Option<PoolState>, ValClientError> {
         self.get_smt_value_serde(Substate::Pools, denom).await
     }
 
     /// Gets a stake info.
-    pub async fn get_stake(&self, staking_txhash: HashVal) -> melnet::Result<Option<StakeDoc>> {
+    pub async fn get_stake(
+        &self,
+        staking_txhash: HashVal,
+    ) -> Result<Option<StakeDoc>, ValClientError> {
         self.get_smt_value_serde(Substate::Stakes, staking_txhash)
             .await
     }
 
     /// Gets a transaction.
-    pub async fn get_transaction(&self, txhash: TxHash) -> melnet::Result<Option<Transaction>> {
+    pub async fn get_transaction(
+        &self,
+        txhash: TxHash,
+    ) -> Result<Option<Transaction>, ValClientError> {
         self.get_smt_value_serde(Substate::Transactions, txhash)
             .await
     }
@@ -458,7 +531,7 @@ impl ValClientSnapshot {
         &self,
         substate: Substate,
         key: S,
-    ) -> melnet::Result<Option<D>> {
+    ) -> Result<Option<D>, ValClientError> {
         let val = self
             .get_smt_value(
                 substate,
@@ -469,12 +542,17 @@ impl ValClientSnapshot {
             return Ok(None);
         }
         let val = stdcode::deserialize(&val)
-            .map_err(|_| MelnetError::Custom("fatal deserialization error".into()))?;
+            .context("fatal deserialization error while getting SMT value")
+            .map_err(ValClientError::InvalidState)?;
         Ok(Some(val))
     }
 
     /// Gets a local SMT branch, validated.
-    pub async fn get_smt_value(&self, substate: Substate, key: HashVal) -> melnet::Result<Vec<u8>> {
+    pub async fn get_smt_value(
+        &self,
+        substate: Substate,
+        key: HashVal,
+    ) -> Result<Vec<u8>, ValClientError> {
         let verify_against = match substate {
             Substate::Coins => self.header.coins_hash,
             Substate::History => self.header.history_hash,
@@ -483,9 +561,10 @@ impl ValClientSnapshot {
             Substate::Transactions => self.header.transactions_hash,
         };
         self.cache.get_or_try_fill((verify_against, key), async {
-        let (val, branch) = self.raw.get_smt_branch(self.height, substate, key).await?;
+        let (val, branch) = self.raw.get_smt_branch(self.height, substate, key).await.map_err(to_neterr)?.context("smt branch suddenly absent").map_err(ValClientError::InvalidState)?;
+        let branch = branch.decompress().context("invalidly compressed SMT branch").map_err(ValClientError::InvalidState)?;
             if !branch.verify(verify_against.0, key.0, &val) {
-                return Err(MelnetError::Custom(format!(
+                return Err(ValClientError::InvalidState(anyhow::anyhow!(
                     "unable to verify merkle proof for height {:?}, substate {:?}, key {:?}, value {:?}, branch {:?}",
                     self.height, substate, key, val, branch
                 )));
@@ -493,174 +572,4 @@ impl ValClientSnapshot {
             Ok(val)
         }).await
     }
-}
-
-/// A client to a particular node server.
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct NodeClient {
-    remote: SocketAddr,
-    netname: String,
-}
-
-impl NodeClient {
-    /// Creates as new NodeClient
-    pub fn new(netid: NetID, remote: SocketAddr) -> Self {
-        let netname = match netid {
-            NetID::Mainnet => "mainnet-node".to_string(),
-            NetID::Testnet => "testnet-node".to_string(),
-            _ => format!("{:?}", netid),
-        };
-        Self { remote, netname }
-    }
-
-    /// Helper function to do a request.
-    async fn request(&self, req: NodeRequest) -> melnet::Result<Vec<u8>> {
-        // eprintln!("==> {:?}", req);
-        // let start = Instant::now();
-        let res: Vec<u8> = melnet::request(self.remote, &self.netname, "node", req).await?;
-        Ok(res)
-    }
-
-    /// Sends a tx.
-    pub async fn send_tx(&self, tx: Transaction) -> melnet::Result<()> {
-        self.request(NodeRequest::SendTx(tx)).await?;
-        Ok(())
-    }
-
-    /// Gets a summary of the state.
-    pub async fn get_summary(&self) -> melnet::Result<StateSummary> {
-        get_summary(self.clone()).await
-    }
-
-    /// Gets an "abbreviated block".
-    pub async fn get_abbr_block(
-        &self,
-        height: BlockHeight,
-    ) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
-        get_abbr_block(self.clone(), height).await
-    }
-
-    /// Gets a full block, given a function that tells known from unknown transactions.
-    pub async fn get_full_block(
-        &self,
-        height: BlockHeight,
-        get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
-    ) -> melnet::Result<(Block, ConsensusProof)> {
-        let (abbr, cproof) = self.get_abbr_block(height).await?;
-        let mut known = vec![];
-        let mut unknown = vec![];
-        for txhash in abbr.txhashes.iter() {
-            if let Some(tx) = get_known_tx(*txhash) {
-                known.push(tx);
-            } else {
-                unknown.push(*txhash);
-            }
-        }
-        // send off a request
-        let mut response: Block = if unknown.is_empty() {
-            Block {
-                header: abbr.header,
-                transactions: HashSet::new(),
-                proposer_action: abbr.proposer_action,
-            }
-        } else {
-            let req = NodeRequest::GetPartialBlock(height, unknown);
-            stdcode::deserialize(&self.request(req).await?)
-                .map_err(|e| melnet::MelnetError::Custom(e.to_string()))?
-        };
-        for known in known {
-            response.transactions.insert(known);
-        }
-        let new_abbr = response.abbreviate();
-        if new_abbr.header != abbr.header || new_abbr.txhashes != abbr.txhashes {
-            return Err(melnet::MelnetError::Custom(
-                "mismatched abbreviation".into(),
-            ));
-        }
-        Ok((response, cproof))
-    }
-
-    /// Gets an SMT branch.
-    pub async fn get_smt_branch(
-        &self,
-        height: BlockHeight,
-        elem: Substate,
-        key: HashVal,
-    ) -> melnet::Result<(Vec<u8>, FullProof)> {
-        get_smt_branch(self.clone(), height, elem, key).await
-    }
-
-    /// Gets the stakers, **as the raw SMT mapping**
-    pub async fn get_stakers_raw(
-        &self,
-        height: BlockHeight,
-    ) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>> {
-        get_stakers_raw(self.clone(), height).await
-    }
-
-    /// Gets some coins.
-    pub async fn get_some_coins(
-        &self,
-        height: BlockHeight,
-        owner: Address,
-    ) -> melnet::Result<Option<Vec<CoinID>>> {
-        stdcode::deserialize(
-            &self
-                .request(NodeRequest::GetSomeCoins(height, owner))
-                .await?,
-        )
-        .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
-    }
-}
-
-// #[cached::proc_macro::cached(result = true, size = 1000)]
-async fn get_stakers_raw(
-    this: NodeClient,
-    height: BlockHeight,
-) -> melnet::Result<BTreeMap<HashVal, Vec<u8>>> {
-    stdcode::deserialize(&this.request(NodeRequest::GetStakersRaw(height)).await?)
-        .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
-}
-
-// #[cached::proc_macro::cached(result = true, size = 1000)]
-async fn get_abbr_block(
-    this: NodeClient,
-    height: BlockHeight,
-) -> melnet::Result<(AbbrBlock, ConsensusProof)> {
-    stdcode::deserialize(&this.request(NodeRequest::GetAbbrBlock(height)).await?)
-        .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
-}
-
-// #[cached::proc_macro::cached(result = true, time = 5, size = 1)]
-async fn get_summary(this: NodeClient) -> melnet::Result<StateSummary> {
-    stdcode::deserialize(&this.request(NodeRequest::GetSummary).await?)
-        .map_err(|e| melnet::MelnetError::Custom(e.to_string()))
-}
-
-// #[cached::proc_macro::cached(result = true, size = 10000)]
-async fn get_smt_branch(
-    this: NodeClient,
-    height: BlockHeight,
-    elem: Substate,
-    keyhash: HashVal,
-) -> melnet::Result<(Vec<u8>, FullProof)> {
-    let tuple: (Vec<u8>, CompressedProof) = stdcode::deserialize(
-        &this
-            .request(NodeRequest::GetSmtBranch(height, elem, keyhash))
-            .await?,
-    )
-    .map_err(|e| melnet::MelnetError::Custom(e.to_string()))?;
-    let decompressed = tuple
-        .1
-        .decompress()
-        .ok_or_else(|| melnet::MelnetError::Custom("could not decompress proof".into()))?;
-    Ok((tuple.0, decompressed))
-}
-
-// #[cached::proc_macro::cached(result = true, size = 100)]
-async fn get_full_block(
-    this: NodeClient,
-    height: BlockHeight,
-) -> melnet::Result<(Block, ConsensusProof)> {
-    this.get_full_block(height, |_| None).await
 }
