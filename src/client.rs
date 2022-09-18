@@ -69,24 +69,15 @@ pub trait TrustStore {
 /// A higher-level client that validates all information.
 #[derive(Derivative)]
 #[derivative(Debug, Clone(bound = ""))]
-pub struct ValClient<T = InMemoryTrustStore> {
+pub struct ValClient {
     netid: NetID,
-    trust_store: Arc<T>,
+    #[derivative(Debug = "ignore")]
+    trust_store: Arc<dyn TrustStore + Send + Sync + 'static>,
     #[derivative(Debug = "ignore")]
     cache: Arc<AsyncCache>,
 
     #[derivative(Debug = "ignore")]
     raw: Arc<NodeRpcClient<DynRpcTransport>>,
-}
-
-impl ValClient<InMemoryTrustStore> {
-    /// Creates a new ValClient, hardcoding the default, in-memory trust store.
-    pub fn new<Net: RpcTransport>(netid: NetID, remote: NodeRpcClient<Net>) -> Self
-    where
-        Net::Error: Into<anyhow::Error>,
-    {
-        Self::new_with_truststore(netid, remote, InMemoryTrustStore::new())
-    }
 }
 
 /// Errors that a ValClient may return
@@ -103,19 +94,27 @@ fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
     ValClientError::NetworkError(anyhow::anyhow!("{}", e.to_string()))
 }
 
-impl<T: TrustStore + Send + Sync + 'static> ValClient<T> {
+impl ValClient {
+    /// Creates a new ValClient, hardcoding the default, in-memory trust store.
+    pub fn new<Net: RpcTransport>(netid: NetID, remote: NodeRpcClient<Net>) -> Self
+    where
+        Net::Error: Into<anyhow::Error>,
+    {
+        Self::new_with_truststore(netid, remote, InMemoryTrustStore::new())
+    }
+
     /// Creates a new ValClient.
     pub fn new_with_truststore<Net: RpcTransport>(
         netid: NetID,
         remote: NodeRpcClient<Net>,
-        trust_store: T,
+        trust_store: impl TrustStore + Send + Sync + 'static,
     ) -> Self
     where
         Net::Error: Into<anyhow::Error>,
     {
         Self {
             netid,
-            trust_store: trust_store.into(),
+            trust_store: Arc::new(trust_store),
             cache: Arc::new(AsyncCache::new(10000)),
             raw: NodeRpcClient(DynRpcTransport::new(remote.0)).into(),
         }
