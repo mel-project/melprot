@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
+use anyhow::Context;
 use async_trait::async_trait;
 use melnet::Request;
 use nanorpc::{nanorpc_derive, RpcTransport};
@@ -78,6 +79,7 @@ pub enum NodeRequest {
 impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcService<T> {
     async fn respond(&self, req: Request<NodeRequest>) -> anyhow::Result<Vec<u8>> {
         let service = &self.0;
+        log::debug!("LEGACY request: {:?}", req.body);
         match req.body {
             NodeRequest::SendTx(tx) => {
                 let _ = service.send_tx(tx).await;
@@ -88,16 +90,25 @@ impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcServi
                 Ok(stdcode::serialize(&summary)?)
             }
             NodeRequest::GetAbbrBlock(height) => {
-                let block = service.get_abbr_block(height).await;
+                let block = service
+                    .get_abbr_block(height)
+                    .await
+                    .context("no such height")?;
                 Ok(stdcode::serialize(&block)?)
             }
             NodeRequest::GetSmtBranch(height, elem, key) => {
-                let branch = service.get_smt_branch(height, elem, key).await;
+                let branch = service
+                    .get_smt_branch(height, elem, key)
+                    .await
+                    .context("no such height")?;
                 Ok(stdcode::serialize(&branch)?)
             }
-            NodeRequest::GetStakersRaw(height) => {
-                Ok(stdcode::serialize(&service.get_stakers_raw(height).await)?)
-            }
+            NodeRequest::GetStakersRaw(height) => Ok(stdcode::serialize(
+                &service
+                    .get_stakers_raw(height)
+                    .await
+                    .context("no such height")?,
+            )?),
             NodeRequest::GetPartialBlock(height, mut hvv) => {
                 hvv.sort_unstable();
                 let hvv = hvv;
