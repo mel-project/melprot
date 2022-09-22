@@ -8,7 +8,7 @@ use tmelcrypt::HashVal;
 
 fn main() {
     smolscale::block_on(async move {
-        let args: Args = argh::fro & m_env();
+        let args: Args = argh::from_env();
         let backhaul = TcpBackhaul::new();
         let rpc_client = NodeRpcClient(
             backhaul
