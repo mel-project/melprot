@@ -130,6 +130,7 @@ impl ValClient {
         self.trust_store.set(self.netid, trusted);
     }
 
+    /// NOTE: this is only used for testing (e.g. from CLI utils, etc.)
     /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
     #[deprecated]
     pub async fn insecure_latest_snapshot(&self) -> Result<ValClientSnapshot, ValClientError> {

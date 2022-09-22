@@ -44,3 +44,4 @@ smol_str = "0.1.23"
 
 [dev-dependencies]
 argh = "0.1.8"
+melnet2 = { path = "../melnet2" }
