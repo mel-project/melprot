@@ -1,14 +1,14 @@
-use std::net::SocketAddr;
+use std::net::{AddrParseError, SocketAddr};
 
 use argh::FromArgs;
 use melnet2::{wire::tcp::TcpBackhaul, Backhaul};
-use themelio_nodeprot::{NodeRpcClient, Substate, TrustedHeight, ValClient};
-use themelio_structs::{Address, BlockHeight, NetID, Transaction, TxHash};
+use themelio_nodeprot::{NodeRpcClient, Substate, TrustedHeight, ValClient, ValClientSnapshot};
+use themelio_structs::{Address, BlockHeight, CoinID, NetID, PoolKey, Transaction, TxHash};
 use tmelcrypt::HashVal;
 
 fn main() {
     smolscale::block_on(async move {
-        let args: Args = argh::from_env();
+        let args: Args = argh::fro & m_env();
         let backhaul = TcpBackhaul::new();
         let rpc_client = NodeRpcClient(
             backhaul
@@ -17,12 +17,29 @@ fn main() {
                 .expect("failed to create RPC client"),
         );
 
-        // one-off set up to test using a custom network.
+        // one-off set up to "trust" a custom network.
         let client = ValClient::new(args.netid, rpc_client);
         let snapshot = client.insecure_latest_snapshot().await.unwrap();
 
-        match args.rpc_method.into() {
-            RpcMethod::GetSummary(_) => {
+        match args.client_method.into() {
+            ClientMethod::Snapshot(args) => {
+                let snapshot = client.snapshot().await.expect("snapshot error");
+                print_snapshot_info(snapshot, args).await;
+            }
+            ClientMethod::OlderSnapshot(args) => {
+                let snapshot = client
+                    .older_snapshot(args.height)
+                    .await
+                    .expect("older_snapshot error");
+                print_snapshot_info(snapshot, args).await;
+            }
+            ClientMethod::SendTxRaw(tx_str) => {
+                todo!()
+            }
+            ClientMethod::GetSmtBranchRaw(args) => {
+                todo!()
+            }
+            ClientMethod::GetSummaryRaw(_) => {
                 let summary = snapshot
                     .get_raw()
                     .get_summary()
@@ -30,7 +47,7 @@ fn main() {
                     .expect("get_summary error");
                 println!("get_summary result: {:?}", summary);
             }
-            RpcMethod::GetAbbrBlock(args) => {
+            ClientMethod::GetAbbrBlockRaw(args) => {
                 let abbr_block = snapshot
                     .get_raw()
                     .get_abbr_block(args.height)
@@ -38,7 +55,7 @@ fn main() {
                     .expect("get_abbr_block error");
                 println!("get_abbr_block result: {:?}", abbr_block);
             }
-            RpcMethod::GetStakersRaw(args) => {
+            ClientMethod::GetStakersRaw(args) => {
                 let stakers = snapshot
                     .get_raw()
                     .get_stakers_raw(args.height)
@@ -46,7 +63,7 @@ fn main() {
                     .expect("get_stakers_raw error");
                 println!("get_stakers_raw result: {:?}", stakers);
             }
-            RpcMethod::GetPartialBlock(mut args) => {
+            ClientMethod::GetPartialBlockRaw(mut args) => {
                 args.tx_hashes.sort_unstable();
                 let hvv = args.tx_hashes;
 
@@ -58,7 +75,7 @@ fn main() {
                     println!("no results for get_partial_block");
                 }
             }
-            RpcMethod::GetSomeCoins(args) => {
+            ClientMethod::GetSomeCoinsRaw(args) => {
                 let coins = snapshot
                     .get_raw()
                     .get_some_coins(args.height, args.address)
@@ -71,12 +88,51 @@ fn main() {
     });
 }
 
+async fn print_snapshot_info(snapshot: ValClientSnapshot, args: SnapshotArgs) {
+    let current_block = snapshot.current_block().await.expect("current_block error");
+    // TODO: snapshot.current_block_with_known()
+    let current_header = snapshot.current_header();
+    let coin = snapshot
+        .get_coin(args.coin_id)
+        .await
+        .expect("get_coin error");
+    let coin_count = snapshot
+        .get_coin_count(args.covhash)
+        .await
+        .expect("get_coin_count error");
+    let coin_data_height = snapshot
+        .get_coin_spent_here(args.coin_id)
+        .await
+        .expect("get_coin_spent_here error");
+    let coins = snapshot
+        .get_coins(args.covhash)
+        .await
+        .expect("get_coins error");
+    let history = snapshot
+        .get_history(args.height)
+        .await
+        .expect("get_history error");
+    let pool = snapshot.get_pool(args.denom).await.expect("get_pool error");
+
+    println!(
+        "current_block: {:?},
+                    current_header: {:?},
+                    coin: {:?},
+                    coin_count: {:?},
+                    coin_data_height: {:?},
+                    coins: {:?},
+                    history: {:?},
+                    pool: {:?}",
+        current_block, current_header, coin, coin_count, coin_data_height, coins, history, pool
+    );
+}
+
 #[derive(FromArgs, PartialEq, Debug)]
 /// Top-level command specifying the RPC method to call.
 pub struct Args {
     #[argh(subcommand)]
     /// umbrella field for the RPC method to call.
-    rpc_method: RpcMethod,
+    client_method: ClientMethod,
 
     #[argh(option)]
     /// the address of the node server to talk to.
@@ -89,24 +145,71 @@ pub struct Args {
 
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand)]
-enum RpcMethod {
-    //SendTx(SendTxArgs),
-    GetAbbrBlock(GetAbbrBlockArgs),
-    GetSummary(GetSummaryArgs),
-    //GetSmtBranch(GetSmtBranchArgs),
+enum ClientMethod {
+    // ValClient methods
+    Snapshot(SnapshotArgs),
+    OlderSnapshot(SnapshotArgs),
+
+    // Raw RPC methods
+    SendTxRaw(SendTxArgs),
+    GetAbbrBlockRaw(GetAbbrBlockArgs),
+    GetSummaryRaw(GetSummaryArgs),
+    GetSmtBranchRaw(GetSmtBranchArgs),
     GetStakersRaw(GetStakersRawArgs),
-    GetPartialBlock(GetPartialBlockArgs),
-    GetSomeCoins(GetSomeCoinsArgs),
+    GetPartialBlockRaw(GetPartialBlockArgs),
+    GetSomeCoinsRaw(GetSomeCoinsArgs),
 }
 
-// #[derive(FromArgs, PartialEq, Debug)]
-// #[argh(subcommand, name = "send_tx_args")]
-// /// Arguments for the `SendTx` RPC.
-// struct SendTxArgs {
-//     #[argh(option)]
-//     /// transaction to send
-//     transaction: Transaction,
-// }
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "snapshot_args")]
+/// Arguments for the `OlderSnapshot` command. These include arguments for `ValClientSnapshot` methods as well.
+struct SnapshotArgs {
+    #[argh(option)]
+    /// block height
+    height: BlockHeight,
+
+    #[argh(option)]
+    /// coin ID
+    coin_id: CoinID,
+
+    #[argh(option)]
+    /// covhash address
+    covhash: Address,
+
+    #[argh(option)]
+    /// pool key `Denom`
+    denom: PoolKey,
+
+    #[argh(option)]
+    /// staking transaction hash
+    staking_txhash: HashVal,
+
+    #[argh(option)]
+    /// transaction hash
+    txhash: TxHash,
+
+    #[argh(option)]
+    /// SMT substate
+    smt_substate: Substate,
+
+    #[argh(option)]
+    /// SMT key
+    smt_key: HashVal,
+}
+
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "get_trusted_stakers_args")]
+/// Arguments for the `GetTrustedStakers` command.
+struct GetTrustedStakerArgs {}
+
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "send_tx_args")]
+/// Arguments for the `SendTx` RPC.
+struct SendTxArgs {
+    #[argh(option)]
+    /// transaction string to send
+    transaction: String,
+}
 
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand, name = "get_summary")]
@@ -122,22 +225,22 @@ struct GetAbbrBlockArgs {
     height: BlockHeight,
 }
 
-// #[derive(FromArgs, PartialEq, Debug)]
-// #[argh(subcommand, name = "get_smt_branch")]
-// /// Arguments for the `GetSmtBranch` RPC.
-// struct GetSmtBranchArgs {
-//     #[argh(option)]
-//     /// block height
-//     height: BlockHeight,
-//     #[argh(option)]
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "get_smt_branch")]
+/// Arguments for the `GetSmtBranch` RPC.
+struct GetSmtBranchArgs {
+    #[argh(option)]
+    /// block height
+    height: BlockHeight,
+    #[argh(option)]
 
-//     /// substate
-//     substate: Substate,
+    /// substate
+    substate: Substate,
 
-//     #[argh(option)]
-//     /// hash value
-//     hashval: HashVal,
-// }
+    #[argh(option)]
+    /// hash value
+    hashval: HashVal,
+}
 
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand, name = "get_stakers_raw")]
