@@ -1,9 +1,11 @@
-use std::net::{AddrParseError, SocketAddr};
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use argh::FromArgs;
 use melnet2::{wire::tcp::TcpBackhaul, Backhaul};
-use themelio_nodeprot::{NodeRpcClient, Substate, TrustedHeight, ValClient, ValClientSnapshot};
-use themelio_structs::{Address, BlockHeight, CoinID, NetID, PoolKey, Transaction, TxHash};
+use themelio_nodeprot::{NodeRpcClient, Substate, ValClient, ValClientSnapshot};
+use themelio_structs::{
+    Address, BlockHeight, CoinDataHeight, CoinID, Header, NetID, PoolKey, PoolState, TxHash,
+};
 use tmelcrypt::HashVal;
 
 fn main() {
@@ -27,16 +29,15 @@ fn main() {
                 print_snapshot_info(snapshot, args).await;
             }
             ClientMethod::OlderSnapshot(args) => {
-                let snapshot = client
-                    .older_snapshot(args.height)
-                    .await
-                    .expect("older_snapshot error");
-                print_snapshot_info(snapshot, args).await;
+                if let Some(height) = args.height {
+                    client.older_snapshot(height).await.expect("snapshot error");
+                    print_snapshot_info(snapshot, args).await;
+                }
             }
-            ClientMethod::SendTxRaw(tx_str) => {
+            ClientMethod::SendTxRaw(_) => {
                 todo!()
             }
-            ClientMethod::GetSmtBranchRaw(args) => {
+            ClientMethod::GetSmtBranchRaw(_) => {
                 todo!()
             }
             ClientMethod::GetSummaryRaw(_) => {
@@ -83,7 +84,6 @@ fn main() {
                     .unwrap();
                 println!("get_some_coins result: {:?}", coins);
             }
-            _ => todo!(),
         }
     });
 }
@@ -92,27 +92,57 @@ async fn print_snapshot_info(snapshot: ValClientSnapshot, args: SnapshotArgs) {
     let current_block = snapshot.current_block().await.expect("current_block error");
     // TODO: snapshot.current_block_with_known()
     let current_header = snapshot.current_header();
-    let coin = snapshot
-        .get_coin(args.coin_id)
-        .await
-        .expect("get_coin error");
-    let coin_count = snapshot
-        .get_coin_count(args.covhash)
-        .await
-        .expect("get_coin_count error");
-    let coin_data_height = snapshot
-        .get_coin_spent_here(args.coin_id)
-        .await
-        .expect("get_coin_spent_here error");
-    let coins = snapshot
-        .get_coins(args.covhash)
-        .await
-        .expect("get_coins error");
-    let history = snapshot
-        .get_history(args.height)
-        .await
-        .expect("get_history error");
-    let pool = snapshot.get_pool(args.denom).await.expect("get_pool error");
+
+    let coin: Option<CoinDataHeight> = if let Some(coin_id) = args.coin_id {
+        let c = snapshot.get_coin(coin_id).await.expect("get_coin error");
+        c
+    } else {
+        None
+    };
+
+    let coin_count: Option<u64> = if let Some(covhash) = args.covhash {
+        let count = snapshot
+            .get_coin_count(covhash)
+            .await
+            .expect("get_coin_count error");
+        count
+    } else {
+        None
+    };
+
+    let coin_data_height: Option<CoinDataHeight> = if let Some(coin_id) = args.coin_id {
+        let cdh = snapshot
+            .get_coin_spent_here(coin_id)
+            .await
+            .expect("get_coin_spent_here error");
+        cdh
+    } else {
+        None
+    };
+
+    let coins: Option<BTreeMap<CoinID, CoinDataHeight>> = if let Some(covhash) = args.covhash {
+        let c = snapshot.get_coins(covhash).await.expect("get_coins error");
+        c
+    } else {
+        None
+    };
+
+    let history: Option<Header> = if let Some(height) = args.height {
+        let h = snapshot
+            .get_history(height)
+            .await
+            .expect("get_history error");
+        h
+    } else {
+        None
+    };
+
+    let pool: Option<PoolState> = if let Some(denom) = args.denom {
+        let p = snapshot.get_pool(denom).await.expect("get_pool error");
+        p
+    } else {
+        None
+    };
 
     println!(
         "current_block: {:?},
@@ -161,40 +191,41 @@ enum ClientMethod {
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "snapshot_args")]
-/// Arguments for the `OlderSnapshot` command. These include arguments for `ValClientSnapshot` methods as well.
+#[argh(subcommand, name = "snapshot")]
+/// Arguments for the `Snapshot` command.
+/// These include arguments for `ValClientSnapshot` methods as well.
 struct SnapshotArgs {
     #[argh(option)]
     /// block height
-    height: BlockHeight,
+    height: Option<BlockHeight>,
 
     #[argh(option)]
     /// coin ID
-    coin_id: CoinID,
+    coin_id: Option<CoinID>,
 
     #[argh(option)]
     /// covhash address
-    covhash: Address,
+    covhash: Option<Address>,
 
     #[argh(option)]
     /// pool key `Denom`
-    denom: PoolKey,
+    denom: Option<PoolKey>,
 
     #[argh(option)]
     /// staking transaction hash
-    staking_txhash: HashVal,
+    staking_txhash: Option<HashVal>,
 
     #[argh(option)]
     /// transaction hash
-    txhash: TxHash,
+    txhash: Option<TxHash>,
 
     #[argh(option)]
     /// SMT substate
-    smt_substate: Substate,
+    smt_substate: Option<Substate>,
 
     #[argh(option)]
     /// SMT key
-    smt_key: HashVal,
+    smt_key: Option<HashVal>,
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
