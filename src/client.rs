@@ -130,6 +130,25 @@ impl ValClient {
         self.trust_store.set(self.netid, trusted);
     }
 
+    /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
+    #[deprecated]
+    pub async fn insecure_latest_snapshot(&self) -> Result<ValClientSnapshot, ValClientError> {
+        self.trust_latest().await?;
+        self.snapshot().await
+    }
+
+    /// NOTE: this is only used for testing (e.g. from CLI utils, etc.)
+    /// Trust the latest height
+    #[deprecated]
+    async fn trust_latest(&self) -> Result<(), ValClientError> {
+        let summary = self.raw.get_summary().await.map_err(to_neterr)?;
+        self.trust(TrustedHeight {
+            height: summary.height,
+            header_hash: summary.header.hash(),
+        });
+        Ok(())
+    }
+
     /// Obtains a validated snapshot based on what height was trusted.
     pub async fn snapshot(&self) -> Result<ValClientSnapshot, ValClientError> {
         let _c = self.raw.clone();
