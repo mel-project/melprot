@@ -9,7 +9,6 @@ use tmelcrypt::HashVal;
 fn main() {
     smolscale::block_on(async move {
         let args: Args = argh::from_env();
-        println!("args: {:?}", args);
         let backhaul = TcpBackhaul::new();
         let rpc_client = NodeRpcClient(
             backhaul
@@ -30,6 +29,42 @@ fn main() {
                     .await
                     .expect("get_summary error");
                 println!("get_summary result: {:?}", summary);
+            }
+            RpcMethod::GetAbbrBlock(args) => {
+                let abbr_block = snapshot
+                    .get_raw()
+                    .get_abbr_block(args.height)
+                    .await
+                    .expect("get_abbr_block error");
+                println!("get_abbr_block result: {:?}", abbr_block);
+            }
+            RpcMethod::GetStakersRaw(args) => {
+                let stakers = snapshot
+                    .get_raw()
+                    .get_stakers_raw(args.height)
+                    .await
+                    .expect("get_stakers_raw error");
+                println!("get_stakers_raw result: {:?}", stakers);
+            }
+            RpcMethod::GetPartialBlock(mut args) => {
+                args.tx_hashes.sort_unstable();
+                let hvv = args.tx_hashes;
+
+                if let Some(mut blk) = snapshot.get_raw().get_block(args.height).await.unwrap() {
+                    blk.transactions
+                        .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
+                    println!("get_partial_block result: {:?}", &blk);
+                } else {
+                    println!("no results for get_partial_block");
+                }
+            }
+            RpcMethod::GetSomeCoins(args) => {
+                let coins = snapshot
+                    .get_raw()
+                    .get_some_coins(args.height, args.address)
+                    .await
+                    .unwrap();
+                println!("get_some_coins result: {:?}", coins);
             }
             _ => todo!(),
         }
