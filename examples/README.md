@@ -27,10 +27,17 @@ Options:
   --help            display usage information
 
 Commands:
+  snapshot          Arguments for the `Snapshot` command. These include
+                    arguments for `ValClientSnapshot` methods as well.
+  snapshot          Arguments for the `Snapshot` command. These include
+                    arguments for `ValClientSnapshot` methods as well.
+  send_tx_args      Arguments for the `SendTx` RPC.
   get_abbr_block    Arguments for the `GetAbbrBlock` RPC.
   get_summary       Arguments for the `SendTx` RPC.
+  get_smt_branch    Arguments for the `GetSmtBranch` RPC.
   get_stakers_raw   Arguments for the `GetStakersRaw` RPC.
   get_partial_block Arguments for the `GetPartialBlock` RPC.
-  get_some_coins    Arguments for the `GetSomeCoins` RPC.
+  get_some_coins    Arguments for the `GetSomeCoins` RPC.```
+
 ```
 
