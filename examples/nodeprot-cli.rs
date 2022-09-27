@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, net::SocketAddr};
 
 use argh::FromArgs;
 use melnet2::{wire::tcp::TcpBackhaul, Backhaul};
-use themelio_nodeprot::{NodeRpcClient, Substate, ValClient, ValClientSnapshot};
+use themelio_nodeprot::Substate;
+use themelio_nodeprot::{NodeRpcClient, ValClient, ValClientSnapshot};
 use themelio_structs::{
     Address, BlockHeight, CoinDataHeight, CoinID, Header, NetID, PoolKey, PoolState, TxHash,
 };
@@ -145,14 +146,29 @@ async fn print_snapshot_info(snapshot: ValClientSnapshot, args: SnapshotArgs) {
     };
 
     println!(
-        "current_block: {:?},
-                    current_header: {:?},
-                    coin: {:?},
-                    coin_count: {:?},
-                    coin_data_height: {:?},
-                    coins: {:?},
-                    history: {:?},
-                    pool: {:?}",
+        "===== CURRENT_BLOCK =====
+        {:#?},
+        ====================\n
+        ==== CURRENT_HEADER ====
+        {:#?},
+        ====================\n
+        ==== COIN ====
+        {:#?},
+        ====================\n
+        ==== COIN_COUNT ====
+        {:#?},
+        ====================\n
+        ==== COIN_DATA_HEIGHT ====
+        {:#?},
+        ====================\n
+        ==== COINS ====
+        {:#?},
+        ====================\n
+        ==== HISTORY ====
+        {:#?},
+        ====================\n
+        ==== POOL ====
+        {:#?}",
         current_block, current_header, coin, coin_count, coin_data_height, coins, history, pool
     );
 }
@@ -193,7 +209,7 @@ enum ClientMethod {
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand, name = "snapshot")]
 /// Arguments for the `Snapshot` command.
-/// These include arguments for `ValClientSnapshot` methods as well.
+/// These arguments are valid for `OlderSnapshot` as well.
 struct SnapshotArgs {
     #[argh(option)]
     /// block height
