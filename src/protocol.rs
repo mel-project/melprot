@@ -122,11 +122,8 @@ impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcServi
                 }
             }
             NodeRequest::GetSomeCoins(height, address) => {
-                if let Some(coins) = service.get_some_coins(height, address).await {
-                    return Ok(stdcode::serialize(&coins)?);
-                } else {
-                    Ok(vec![])
-                }
+                let result = service.get_some_coins(height, address).await;
+                return Ok(stdcode::serialize(&result)?);
             }
         }
     }
