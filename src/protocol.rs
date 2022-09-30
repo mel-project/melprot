@@ -1,4 +1,8 @@
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt::Display,
+    str::FromStr,
+};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -28,6 +32,40 @@ pub enum Substate {
     Transactions,
     Pools,
     Stakes,
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum SubstateParseError {
+    #[error("Invalid substate")]
+    Invalid,
+}
+
+impl FromStr for Substate {
+    type Err = SubstateParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "HISTORY" => Ok(Substate::History),
+            "COINS" => Ok(Substate::Coins),
+            "TRANSACTIONS" => Ok(Substate::Transactions),
+            "POOLS" => Ok(Substate::Pools),
+            "STAKES" => Ok(Substate::Stakes),
+            _ => Err(SubstateParseError::Invalid),
+        }
+    }
+}
+
+impl Display for Substate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s: String = match self {
+            Substate::History => "HISTORY".into(),
+            Substate::Coins => "COINS".into(),
+            Substate::Transactions => "TRANSACTIONS".into(),
+            Substate::Pools => "POOLs".into(),
+            Substate::Stakes => "STAKES".into(),
+        };
+        s.fmt(f)
+    }
 }
 
 #[nanorpc_derive]
