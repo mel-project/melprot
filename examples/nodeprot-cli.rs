@@ -24,7 +24,7 @@ fn main() {
         let client = ValClient::new(args.netid, rpc_client);
         let snapshot = client.insecure_latest_snapshot().await.unwrap();
 
-        match args.client_method.into() {
+        match args.client_method {
             ClientMethod::Snapshot(args) => {
                 let snapshot = client.snapshot().await.expect("snapshot error");
                 print_snapshot_info(snapshot, args).await;
@@ -95,52 +95,46 @@ async fn print_snapshot_info(snapshot: ValClientSnapshot, args: SnapshotArgs) {
     let current_header = snapshot.current_header();
 
     let coin: Option<CoinDataHeight> = if let Some(coin_id) = args.coin_id {
-        let c = snapshot.get_coin(coin_id).await.expect("get_coin error");
-        c
+        snapshot.get_coin(coin_id).await.expect("get_coin error")
     } else {
         None
     };
 
     let coin_count: Option<u64> = if let Some(covhash) = args.covhash {
-        let count = snapshot
+        snapshot
             .get_coin_count(covhash)
             .await
-            .expect("get_coin_count error");
-        count
+            .expect("get_coin_count error")
     } else {
         None
     };
 
     let coin_data_height: Option<CoinDataHeight> = if let Some(coin_id) = args.coin_id {
-        let cdh = snapshot
+        snapshot
             .get_coin_spent_here(coin_id)
             .await
-            .expect("get_coin_spent_here error");
-        cdh
+            .expect("get_coin_spent_here error")
     } else {
         None
     };
 
     let coins: Option<BTreeMap<CoinID, CoinDataHeight>> = if let Some(covhash) = args.covhash {
-        let c = snapshot.get_coins(covhash).await.expect("get_coins error");
-        c
+        snapshot.get_coins(covhash).await.expect("get_coins error")
     } else {
         None
     };
 
     let history: Option<Header> = if let Some(height) = args.height {
-        let h = snapshot
+        snapshot
             .get_history(height)
             .await
-            .expect("get_history error");
-        h
+            .expect("get_history error")
     } else {
         None
     };
 
     let pool: Option<PoolState> = if let Some(denom) = args.denom {
-        let p = snapshot.get_pool(denom).await.expect("get_pool error");
-        p
+        snapshot.get_pool(denom).await.expect("get_pool error")
     } else {
         None
     };

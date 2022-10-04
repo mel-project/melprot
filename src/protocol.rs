@@ -171,10 +171,8 @@ impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcServi
 pub enum TransactionError {
     #[error("Rejecting recently seen transaction")]
     RecentlySeen,
-    #[error("Duplicate transaction")]
-    Duplicate(String),
-    #[error("Storage error")]
-    Storage,
+    #[error("Invalid transaction: {0}")]
+    Invalid(String),
 }
 
 impl<T: RpcTransport> NodeRpcClient<T> {
