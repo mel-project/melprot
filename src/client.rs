@@ -9,17 +9,18 @@ use nanorpc::{DynRpcTransport, RpcTransport};
 use novasmt::{Database, InMemoryCas, Tree};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
-use smol::{Task};
+use smol::Task;
 use std::{
     collections::{BTreeMap, HashSet},
+    net::SocketAddr,
     str::FromStr,
     sync::Arc,
-    time::Instant, net::SocketAddr,
+    time::Instant,
 };
 
 use themelio_structs::{
-     Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
-    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH, Address,
+    Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
+    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
@@ -121,18 +122,21 @@ impl ValClient {
             raw: NodeRpcClient(DynRpcTransport::new(remote.0)).into(),
         }
     }
-    pub async fn connect(netid: NetID, addr: SocketAddr) -> Self {
-        let backhaul = TcpBackhaul::new();
-        let rpc_client = NodeRpcClient(
-            backhaul
-                .connect(addr.to_string().into())
-                .await
-                .expect(&format!("failed to connect to: {addr}")),
-        );
+
+    /// A convenience method for connecting to a given address, using [melnet2::TcpBackhaul].
+    pub async fn connect_melnet2_tcp(netid: NetID, addr: SocketAddr) -> anyhow::Result<Self> {
+        /// Global backhaul for caching connections etc
+        static BACKHAUL: Lazy<TcpBackhaul> = Lazy::new(TcpBackhaul::new);
+        let rpc_client = NodeRpcClient(BACKHAUL.connect(addr.to_string().into()).await?);
 
         // one-off set up to "trust" a custom network.
-        Self::new_with_truststore(netid, rpc_client, InMemoryTrustStore::new())
+        Ok(Self::new_with_truststore(
+            netid,
+            rpc_client,
+            InMemoryTrustStore::new(),
+        ))
     }
+
     /// Gets the netid.
     pub fn netid(&self) -> NetID {
         self.netid
