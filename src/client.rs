@@ -5,7 +5,7 @@ use derivative::Derivative;
 
 use melnet2::{wire::tcp::TcpBackhaul, Backhaul};
 
-use nanorpc::{DynRpcTransport, RpcTransport};
+use nanorpc::DynRpcTransport;
 use novasmt::{Database, InMemoryCas, Tree};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
@@ -80,7 +80,7 @@ pub struct ValClient {
     cache: Arc<AsyncCache>,
 
     #[derivative(Debug = "ignore")]
-    raw: Arc<NodeRpcClient<DynRpcTransport>>,
+    raw: Arc<NodeRpcClient>,
 }
 
 /// Errors that a ValClient may return
@@ -99,22 +99,17 @@ fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
 
 impl ValClient {
     /// Creates a new ValClient, hardcoding the default, in-memory trust store.
-    pub fn new<Net: RpcTransport>(netid: NetID, remote: NodeRpcClient<Net>) -> Self
-    where
-        Net::Error: Into<anyhow::Error>,
-    {
+    pub fn new(netid: NetID, remote: NodeRpcClient) -> Self {
         Self::new_with_truststore(netid, remote, InMemoryTrustStore::new())
     }
 
     /// Creates a new ValClient.
-    pub fn new_with_truststore<Net: RpcTransport>(
+    pub fn new_with_truststore(
         netid: NetID,
-        remote: NodeRpcClient<Net>,
+        remote: NodeRpcClient,
         trust_store: impl TrustStore + Send + Sync + 'static,
     ) -> Self
-    where
-        Net::Error: Into<anyhow::Error>,
-    {
+where {
         Self {
             netid,
             trust_store: Arc::new(trust_store),
@@ -127,7 +122,7 @@ impl ValClient {
     pub async fn connect_melnet2_tcp(netid: NetID, addr: SocketAddr) -> anyhow::Result<Self> {
         /// Global backhaul for caching connections etc
         static BACKHAUL: Lazy<TcpBackhaul> = Lazy::new(TcpBackhaul::new);
-        let rpc_client = NodeRpcClient(BACKHAUL.connect(addr.to_string().into()).await?);
+        let rpc_client = NodeRpcClient::from(BACKHAUL.connect(addr.to_string().into()).await?);
 
         // one-off set up to "trust" a custom network.
         Ok(Self::new_with_truststore(

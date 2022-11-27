@@ -11,7 +11,7 @@ use tmelcrypt::{HashVal, Hashable};
 
 const SHARDS: usize = 6;
 
-pub struct  AsyncCache {
+pub struct AsyncCache {
     inner: [Mutex<LruCache<HashVal, Bytes, BuildHasherDefault<FxHasher>>>; SHARDS],
 }
 
@@ -39,10 +39,10 @@ impl AsyncCache {
 
         let b = self.inner[bucket].lock().get(&key).cloned();
         if let Some(b) = b {
-            log::debug!("cache HIT for key {}", hex::encode(&key));
+            log::debug!("cache HIT for key {}", hex::encode(key));
             Ok(stdcode::deserialize(&b).expect("badly serialized thing in cache"))
         } else {
-            log::debug!("cache MISS for key {}", hex::encode(&key));
+            log::debug!("cache MISS for key {}", hex::encode(key));
             let res = fallback.await?;
             self.inner[bucket].lock().put(key, res.stdcode().into());
             Ok(res)

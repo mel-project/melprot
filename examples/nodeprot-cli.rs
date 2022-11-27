@@ -13,7 +13,7 @@ fn main() {
     smolscale::block_on(async move {
         let args: Args = argh::from_env();
         let backhaul = TcpBackhaul::new();
-        let rpc_client = NodeRpcClient(
+        let rpc_client = NodeRpcClient::from(
             backhaul
                 .connect(args.addr.to_string().into())
                 .await
