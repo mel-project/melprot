@@ -178,7 +178,7 @@ impl ValClient {
             .cache
             .get_or_try_fill((cache_key, "summary"), async {
                 let summary = self.raw.get_summary().await.map_err(to_neterr)?;
-                self.validate_height(summary.height, summary.header, summary.proof.clone())
+                self.validate_height(summary.height)
                     .await?;
                 Ok((summary.height, summary.header, summary.proof))
             })
@@ -292,14 +292,6 @@ impl ValClient {
             }
         };
 
-        let (abbr_block, proof) = self
-            .raw
-            .get_abbr_block(highest_safe_height)
-            .await
-            .map_err(to_neterr)?
-            .context("old abbr block gone while validating height")
-            .map_err(ValClientError::InvalidState)?;
-
         let stake_docs: Vec<_> = safe_stakers
             .iter()
             .map(|(_, doc)| doc)
@@ -339,18 +331,25 @@ impl ValClient {
     async fn validate_height(
         &self,
         height: BlockHeight,
-        header: Header,
-        proof: ConsensusProof,
-    ) -> Result<(), ValClientError> {
+    ) -> Result<AbbrBlock, ValClientError> {
         let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
+
+        let (abbr_block, proof) = self
+            .raw
+            .get_abbr_block(height)
+            .await
+            .map_err(to_neterr)?
+            .context("old abbr block gone while validating height")
+            .map_err(ValClientError::InvalidState)?;
+
         let header = self
-            .uncached_validate_height(safe_height, safe_stakers, height, header, proof)
+            .uncached_validate_height(safe_height, safe_stakers, height, abbr_block.header, proof)
             .await?;
         self.trust(TrustedHeight {
             height,
             header_hash: header.hash(),
         });
-        Ok(())
+        Ok(abbr_block)
     }
     /// Helper function to obtain the trusted staker set.
     async fn get_trusted_stakers(
