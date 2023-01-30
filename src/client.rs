@@ -16,7 +16,7 @@ use std::{
     net::SocketAddr,
     str::FromStr,
     sync::Arc,
-    time::Instant,
+    time::Instant, future::Future,
 };
 use themelio_structs::{
     AbbrBlock, Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof,
@@ -178,8 +178,7 @@ impl ValClient {
             .cache
             .get_or_try_fill((cache_key, "summary"), async {
                 let summary = self.raw.get_summary().await.map_err(to_neterr)?;
-                self.validate_height(summary.height)
-                    .await?;
+                self.validate_height(summary.height).await?;
                 Ok((summary.height, summary.header, summary.proof))
             })
             .await?;
@@ -276,23 +275,13 @@ impl ValClient {
 
     async fn validate_block(header: Header, proof: ConsensusProof) {}
     async fn uncached_validate_height(
-        &self,
         safe_height: BlockHeight,
         safe_stakers: Tree<InMemoryCas>,
         height: BlockHeight,
         header: Header,
         proof: ConsensusProof,
     ) -> Result<Header, ValClientError> {
-
-        let highest_safe_height = {
-            if safe_height.epoch() > height.epoch() {
-                safe_height
-            } else {
-                BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1)
-            }
-        };
-
-        let stake_docs: Vec<_> = safe_stakers
+        let stake_docs: Vec<StakeDoc> = safe_stakers
             .iter()
             .map(|(_, doc)| doc)
             .map(|doc| stdcode::deserialize::<StakeDoc>(&doc))
@@ -328,28 +317,51 @@ impl ValClient {
         }
         todo!("return")
     }
-    async fn validate_height(
-        &self,
-        height: BlockHeight,
-    ) -> Result<AbbrBlock, ValClientError> {
+    fn validate_height(&self, height: BlockHeight) -> Result<(), ValClientError> {
+        
         let (safe_height, safe_stakers) = self.get_trusted_stakers().await?;
+
+        let highest_verifiable_height = {
+            if safe_height.epoch() == height.epoch() {
+                safe_height
+            } else if safe_height.epoch() < height.epoch() {
+                BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1)
+            } else if safe_height.epoch() + 1 == height.epoch() {
+                height
+            } else {
+                unreachable!()
+            }
+        };
 
         let (abbr_block, proof) = self
             .raw
-            .get_abbr_block(height)
+            .get_abbr_block(highest_verifiable_height)
             .await
             .map_err(to_neterr)?
             .context("old abbr block gone while validating height")
             .map_err(ValClientError::InvalidState)?;
 
-        let header = self
-            .uncached_validate_height(safe_height, safe_stakers, height, abbr_block.header, proof)
-            .await?;
+        let header = ValClient::uncached_validate_height(
+            safe_height,
+            safe_stakers,
+            height,
+            abbr_block.header.clone(),
+            proof,
+        )
+        .await?;
+
         self.trust(TrustedHeight {
             height,
             header_hash: header.hash(),
         });
-        Ok(abbr_block)
+
+        if(highest_verifiable_height == height){
+            Ok(())
+        }
+        else{
+            self.validate_height(height).await
+        }
+        
     }
     /// Helper function to obtain the trusted staker set.
     async fn get_trusted_stakers(
