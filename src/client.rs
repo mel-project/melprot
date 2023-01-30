@@ -274,41 +274,24 @@ impl ValClient {
     /// Helper to validate a given block height and header.
     // #[async_recursion]
 
-    async fn validate_block(header: Header, proof: ConsensusProof) {}
-    async fn uncached_validate_height(
+    async fn count_votes(
         safe_stakers: Tree<InMemoryCas>,
         header: Header,
         proof: ConsensusProof,
     ) -> Result<Header, ValClientError> {
-
-        let stake_docs: Vec<StakeDoc> = safe_stakers
-            .iter()
-            .map(|(_, doc)| doc)
-            .map(|doc| stdcode::deserialize::<StakeDoc>(&doc))
-            .flat_map(|x| x)
-            .collect();
-
-        for (_, serialize_doc) in safe_stakers.iter(){
-            let doc = stdcode::deserialize::<StakeDoc>(&serialize_doc);
-        }
-        let votes_available = stake_docs
-            .iter()
-            .map(|doc| doc.syms_staked)
-            .reduce(|a, b| a + b)
-            .unwrap_or(CoinValue(0));
-
-        let votes_cast = stake_docs
-            .iter()
-            .map(|doc| {
-                if let Some(sig) = proof.get(&doc.pubkey) {
-                    if doc.pubkey.verify(&header.hash(), sig) {
-                        return doc.syms_staked;
-                    }
+        let mut votes_available = CoinValue(0);
+        let mut votes_cast = CoinValue(0);
+        for (_, serialize_doc) in safe_stakers.iter() {
+            let doc = stdcode::deserialize::<StakeDoc>(&serialize_doc)
+                .context("cannot deserialize stakedoc")
+                .map_err(ValClientError::InvalidState)?;
+            votes_available += doc.syms_staked.clone();
+            if let Some(sig) = proof.get(&doc.pubkey) {
+                if doc.pubkey.verify(&header.hash(), sig) {
+                    votes_cast += doc.syms_staked;
                 }
-                CoinValue(0)
-            })
-            .reduce(|a, b| a + b)
-            .unwrap_or(CoinValue(0));
+            }
+        }
 
         if votes_cast < votes_available * 2 / 3 {
             return Err(ValClientError::InvalidState(anyhow::anyhow!(
@@ -320,18 +303,32 @@ impl ValClient {
         }
         todo!("return")
     }
-    fn validate_height(&self, height: BlockHeight) -> Task<Result<(), ValClientError>> {
+
+    fn validate_height(&self, requested_height: BlockHeight) -> Task<Result<(), ValClientError>> {
         let this = self.clone();
         smolscale::spawn(async move {
             let (safe_height, safe_stakers) = this.get_trusted_stakers().await?;
-
+            if (safe_height < requested_height) {
+                return Err(ValClientError::InvalidState(anyhow::anyhow!("cannot validate younger blocks this way")))
+            }
             let highest_verifiable_height = {
-                if safe_height.epoch() == height.epoch() {
-                    safe_height
-                } else if safe_height.epoch() < height.epoch() {
-                    BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1)
-                } else if safe_height.epoch() + 1 == height.epoch() {
-                    height
+                let safe_epoch = safe_height.epoch();
+                let requested_epoch = requested_height.epoch();
+                if safe_epoch == requested_epoch
+                    || requested_epoch == (safe_height + BlockHeight(1)).epoch()
+                {
+                    //the safe height is in the same epoch as the requested_height
+                    //or the safe height is epoch terminal next to the requested epoch
+                    //validate the requested height
+                    requested_height
+                } else if safe_epoch == (safe_height + BlockHeight(1)).epoch() {
+                    // if we aren't at an epoch boundary
+                    // jump to an epoch boundary
+                    BlockHeight((safe_epoch + 1) * STAKE_EPOCH - 1)
+                } else if safe_epoch + 1 < requested_epoch {
+                    // at epoch boundary terminal but still not within 1 epoch
+                    // jump to the next epoch terminal
+                    BlockHeight((safe_epoch + 2) * STAKE_EPOCH - 1)
                 } else {
                     unreachable!()
                 }
@@ -345,22 +342,20 @@ impl ValClient {
                 .context("old abbr block gone while validating height")
                 .map_err(ValClientError::InvalidState)?;
 
-            let header = ValClient::uncached_validate_height(
-                safe_stakers,
-                abbr_block.header.clone(),
-                proof,
-            )
-            .await?;
+            let header =
+                ValClient::count_votes(safe_stakers, abbr_block.header.clone(), proof).await?;
 
             this.trust(TrustedHeight {
-                height,
+                height: header.height,
                 header_hash: header.hash(),
             });
 
-            if (highest_verifiable_height == height) {
+            // if we have verified the requested block, we are done
+            if (highest_verifiable_height == requested_height) {
                 Ok(())
             } else {
-                this.validate_height(height).await
+                //otherwise try again
+                this.validate_height(requested_height).await
             }
         })
     }
