@@ -19,11 +19,11 @@ use std::{
 };
 
 use themelio_structs::{
-    Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
-    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
+    AbbrBlock, Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof,
+    Header, NetID, PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
-use tmelcrypt::{HashVal, Hashable};
+use tmelcrypt::{Ed25519PK, HashVal, Hashable};
 
 use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate};
 
@@ -200,6 +200,107 @@ impl ValClient {
         snap.get_older(height).await
     }
 
+    async fn unsafe_safe_stakers_functional(
+        &self,
+        potentially_safe_height: BlockHeight,
+        safe_height: BlockHeight,
+    ) -> Result<(AbbrBlock, BTreeMap<Ed25519PK, bytes::Bytes>), ValClientError> {
+        
+        //if the potentially safe height is 1 more than the current height
+        // and 1 block from the safe height is in the same epoch
+        if (potentially_safe_height.epoch() - 1 == safe_height.epoch())
+            && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
+        {
+            // to cross the epoch, we must obtain the epoch-terminal snapshot first.
+            // this places the correct thing in the cache, which then lets this one verify too.
+            let epoch_ending_height = BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
+            return self
+                .raw
+                .get_abbr_block(epoch_ending_height)
+                .await
+                .map_err(to_neterr)?
+                .context("old abbr block gone while validating height")
+                .map_err(ValClientError::InvalidState);
+        }
+
+        // this will capture all greater blocks
+
+        else {
+            log::error!(
+                "OUTDATED CHECKPOINT: trusted height {} in epoch {} but remote height {} in epoch {}. Continuing with best-effort to update checkpoint",
+                safe_height,
+                safe_height.epoch(),
+                potentially_safe_height,
+                potentially_safe_height.epoch());
+
+            // Okay, we must recurse to one epoch ago now
+            let old_height = BlockHeight(potentially_safe_height.0.saturating_sub(STAKE_EPOCH));
+            return self
+                .raw
+                .get_abbr_block(old_height)
+                .await
+                .map_err(to_neterr)?
+                .ok_or_else(|| {
+                    ValClientError::InvalidState(anyhow::anyhow!(
+                        "old block gone while validating height"
+                    ))
+                });
+        }
+
+    }
+
+    async fn safe_stakers(&self, height: BlockHeight) -> Result<Tree<InMemoryCas>, ValClientError> {
+        let this = self.clone();
+        let safe_stakers = loop {
+            let (safe_height, safe_stakers) = this.get_trusted_stakers().await?;
+            // if so go back a full epoch and verify that block
+            if height.epoch() > safe_height.epoch() + 1 {
+                log::error!(
+            "OUTDATED CHECKPOINT: trusted height {} in epoch {} but remote height {} in epoch {}. Continuing with best-effort to update checkpoint",
+            safe_height,
+            safe_height.epoch(),
+            height,
+            height.epoch()
+        );
+                // Okay, we must recurse to one epoch ago now
+                let old_height = BlockHeight(height.0.saturating_sub(STAKE_EPOCH));
+                let (old_block, old_proof) = self
+                    .raw
+                    .get_abbr_block(old_height)
+                    .await
+                    .map_err(to_neterr)?
+                    .ok_or_else(|| {
+                        ValClientError::InvalidState(anyhow::anyhow!(
+                            "old block gone while validating height"
+                        ))
+                    })?;
+                self.validate_height(old_height, old_block.header, old_proof)
+                    .await?;
+                // eventually we will find ourselve here, guaranteed to be only 1 epoch greater thatn the current epoch
+                // AND then next block isn't an epoch transition?
+            } else if height.epoch() > safe_height.epoch()
+                && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
+            {
+                // to cross the epoch, we must obtain the epoch-terminal snapshot first.
+                // this places the correct thing in the cache, which then lets this one verify too.
+                let epoch_ending_height = BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
+                let (old_block, old_proof) = self
+                    .raw
+                    .get_abbr_block(epoch_ending_height)
+                    .await
+                    .map_err(to_neterr)?
+                    .context("old abbr block gone while validating height")
+                    .map_err(ValClientError::InvalidState)?;
+                self.validate_height(epoch_ending_height, old_block.header, old_proof)
+                    .await?;
+            }
+            // already have the epoch terminal staker set since THIS block is the epoch terminal
+            else {
+                break safe_stakers;
+            }
+        };
+        Ok(safe_stakers)
+    }
     /// Helper to validate a given block height and header.
     // #[async_recursion]
     fn validate_height(
@@ -210,52 +311,8 @@ impl ValClient {
     ) -> Task<Result<(), ValClientError>> {
         let this = self.clone();
         smolscale::spawn(async move {
-            let safe_stakers = {
-                loop {
-                    let (safe_height, safe_stakers) = this.get_trusted_stakers().await?;
-                    if height.epoch() > safe_height.epoch() + 1 {
-                        log::error!(
-                    "OUTDATED CHECKPOINT: trusted height {} in epoch {} but remote height {} in epoch {}. Continuing with best-effort to update checkpoint",
-                    safe_height,
-                    safe_height.epoch(),
-                    height,
-                    height.epoch()
-                );
-                        // Okay, we must recurse to one epoch ago now
-                        let old_height = BlockHeight(height.0.saturating_sub(STAKE_EPOCH));
-                        let (old_block, old_proof) = this
-                            .raw
-                            .get_abbr_block(old_height)
-                            .await
-                            .map_err(to_neterr)?
-                            .ok_or_else(|| {
-                                ValClientError::InvalidState(anyhow::anyhow!(
-                                    "old block gone while validating height"
-                                ))
-                            })?;
-                        this.validate_height(old_height, old_block.header, old_proof)
-                            .await?;
-                    } else if height.epoch() > safe_height.epoch()
-                        && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
-                    {
-                        // to cross the epoch, we must obtain the epoch-terminal snapshot first.
-                        // this places the correct thing in the cache, which then lets this one verify too.
-                        let epoch_ending_height =
-                            BlockHeight((safe_height.epoch() + 1) * STAKE_EPOCH - 1);
-                        let (old_block, old_proof) = this
-                            .raw
-                            .get_abbr_block(epoch_ending_height)
-                            .await
-                            .map_err(to_neterr)?
-                            .context("old abbr block gone while validating height")
-                            .map_err(ValClientError::InvalidState)?;
-                        this.validate_height(epoch_ending_height, old_block.header, old_proof)
-                            .await?;
-                    } else {
-                        break safe_stakers;
-                    }
-                }
-            };
+            // let old_height  =x
+            let safe_stakers = this.safe_stakers(height.clone()).await?;
             // we use the stakers to validate the latest summary
             let mut good_votes = CoinValue(0);
             let mut total_votes = CoinValue(0);
@@ -263,6 +320,7 @@ impl ValClient {
                 let doc: StakeDoc = stdcode::deserialize(&doc)
                     .context("cannot deserialize stakedoc")
                     .map_err(ValClientError::InvalidState)?;
+                // is the this height within the safe stakedoc height (should be yes by now?)
                 if height.epoch() >= doc.e_start && height.epoch() < doc.e_post_end {
                     total_votes += doc.syms_staked;
                     if let Some(sig) = proof.get(&doc.pubkey) {
