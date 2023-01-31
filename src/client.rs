@@ -332,7 +332,7 @@ impl ValClient {
                 } else if safe_epoch + 1 < requested_epoch {
                     // at epoch boundary but still not within 1 epoch
                     // jump to the next epoch terminal
-                    BlockHeight((safe_epoch + 2) * STAKE_EPOCH - 1)
+                    safe_height + BlockHeight(STAKE_EPOCH)
                 } else {
                     unreachable!()
                 }
