@@ -103,7 +103,11 @@ pub trait NodeRpcProtocol: Send + Sync {
     }
 
     /// Gets the changes in coins owned by the given address, at the given height.
-    async fn get_coin_changes(&self, height: BlockHeight, address: Address) -> Vec<CoinChange>;
+    async fn get_coin_changes(
+        &self,
+        height: BlockHeight,
+        address: Address,
+    ) -> Option<Vec<CoinChange>>;
 }
 
 /// Change in coins.
