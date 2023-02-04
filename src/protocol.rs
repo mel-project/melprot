@@ -111,7 +111,7 @@ pub trait NodeRpcProtocol: Send + Sync {
 }
 
 /// Change in coins.
-#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
 pub enum CoinChange {
     Add(CoinID),
     Delete(CoinID),
