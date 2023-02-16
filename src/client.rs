@@ -19,7 +19,7 @@ use std::{
     time::Instant,
 };
 
-use futures_util::{stream::unfold, Stream, StreamExt, TryStreamExt};
+use futures_util::{Stream, StreamExt, TryStreamExt};
 
 use themelio_structs::{
     Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
@@ -348,39 +348,47 @@ impl ValClient {
         picker: impl Fn(&Transaction) -> Option<usize> + Send + 'static,
     ) -> impl Stream<Item = Transaction> {
         let seed = (height, txhash);
-        futures_util::stream::unfold(seed, move |state| async move {
-            Some((Transaction::new(TxKind::Normal), seed))
-            // let curr_height = state.0;
-            // let curr_txhash = state.1;
-
-            // let snap = self.snapshot().await.unwrap();
-            // let tx = snap.get_transaction(txhash).await.unwrap().unwrap();
-            // let prev_coin = tx.inputs.get(picker(&tx)?)?;
-            // let prev_snap = snap.get_older(prev_coin)
-            // let prev_tx = snap
-            //     .get_transaction(prev_coin.unwrap().txhash)
-            //     .await
-            //     .unwrap()
-            //     .unwrap();
-
-            // if let Some(block) = block {
-            //     let tx = block
-            //         .transactions
-            //         .iter()
-            //         .find(|tx| tx.hash_nosigs() == curr_txhash)
-            //         .unwrap();
-            //     let prev_tx = snap
-            //         .get_transaction(prev_coin.unwrap().txhash)
-            //         .await
-            //         .unwrap()
-            //         .unwrap();
-
-            //     // return (Item, T)
-            //     let next_state = (block.header.height, prev_tx.hash_nosigs());
-            //     Some((prev_tx.clone(), next_state))
-            // } else {
-            //     None
-            // }
+        let this = self.clone();
+        let picker = Arc::new(picker);
+        futures_util::stream::unfold(seed, move |(current_height, current_txhash)| {
+            let this = this.clone();
+            let picker = picker.clone();
+            async move {
+                loop {
+                    let fallible_part = async {
+                        // we need a snapshot at *this* height, because only that can let us use get_transaction
+                        let current_snap = this.older_snapshot(current_height).await?;
+                        let current_tx = current_snap
+                            .get_transaction(current_txhash)
+                            .await?
+                            .expect("somehow got stuck halfway through");
+                        let next_coin = current_tx
+                            .inputs
+                            .get(if let Some(idx) = picker(&current_tx) {
+                                idx
+                            } else {
+                                return anyhow::Ok(None);
+                            })
+                            .copied()
+                            .expect("picker picked out of bounds");
+                        let next_height = current_snap
+                            .get_coin_spent_here(next_coin)
+                            .await?
+                            .expect("this coin WAS spent here, wtf")
+                            .height;
+                        anyhow::Ok(Some((current_tx, (next_height, next_coin.txhash))))
+                    };
+                    match fallible_part.await {
+                        Ok(value) => return value,
+                        Err(err) => {
+                            log::warn!(
+                                "got stuck traversing due to error: {:?}, trying again",
+                                err
+                            );
+                        }
+                    }
+                }
+            }
         })
     }
 
