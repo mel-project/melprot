@@ -13,14 +13,17 @@ use smol::Task;
 use std::{
     collections::{BTreeMap, HashSet},
     net::SocketAddr,
+    pin::Pin,
     str::FromStr,
     sync::Arc,
     time::Instant,
 };
 
+use futures_util::{stream::unfold, Stream, StreamExt, TryStreamExt};
+
 use themelio_structs::{
     Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
-    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
+    PoolKey, PoolState, StakeDoc, Transaction, TxHash, TxKind, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
@@ -337,6 +340,53 @@ impl ValClient {
         }
         Ok((checkpoint.height, mapping))
     }
+
+    pub fn traverse_back(
+        &self,
+        height: BlockHeight,
+        txhash: TxHash,
+        picker: impl Fn(&Transaction) -> Option<usize> + Send + 'static,
+    ) -> impl Stream<Item = Transaction> {
+        let seed = (height, txhash);
+        futures_util::stream::unfold(seed, move |state| async move {
+            Some((Transaction::new(TxKind::Normal), seed))
+            // let curr_height = state.0;
+            // let curr_txhash = state.1;
+
+            // let snap = self.snapshot().await.unwrap();
+            // let tx = snap.get_transaction(txhash).await.unwrap().unwrap();
+            // let prev_coin = tx.inputs.get(picker(&tx)?)?;
+            // let prev_snap = snap.get_older(prev_coin)
+            // let prev_tx = snap
+            //     .get_transaction(prev_coin.unwrap().txhash)
+            //     .await
+            //     .unwrap()
+            //     .unwrap();
+
+            // if let Some(block) = block {
+            //     let tx = block
+            //         .transactions
+            //         .iter()
+            //         .find(|tx| tx.hash_nosigs() == curr_txhash)
+            //         .unwrap();
+            //     let prev_tx = snap
+            //         .get_transaction(prev_coin.unwrap().txhash)
+            //         .await
+            //         .unwrap()
+            //         .unwrap();
+
+            //     // return (Item, T)
+            //     let next_state = (block.header.height, prev_tx.hash_nosigs());
+            //     Some((prev_tx.clone(), next_state))
+            // } else {
+            //     None
+            // }
+        })
+    }
+
+    // pub fn traverse_fwd(&self) -> impl futures::Stream<Item = Transaction> {
+    //     todo!()
+    // }
 }
 
 /// A "snapshot" of the state at a given state. It essentially encapsulates a NodeClient and a trusted header.

@@ -108,6 +108,10 @@ pub trait NodeRpcProtocol: Send + Sync {
         height: BlockHeight,
         address: Address,
     ) -> Option<Vec<CoinChange>>;
+
+    async fn get_tx_for_coin(&self, _coin_id: CoinID) -> Option<(TxHash, BlockHeight)> {
+        None
+    }
 }
 
 /// Change in coins.
