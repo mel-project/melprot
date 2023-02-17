@@ -28,9 +28,7 @@ use themelio_structs::{
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
 
-use crate::{
-    cache::AsyncCache, CoinSpendStatus, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate,
-};
+use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate};
 
 #[derive(Debug, Clone)]
 pub struct TrustedHeight {
@@ -95,8 +93,6 @@ pub enum ValClientError {
     InvalidState(anyhow::Error),
     #[error("error during network communication: {0}")]
     NetworkError(anyhow::Error),
-    #[error("invalid node configuration: {0}")]
-    InvalidNodeConfig(anyhow::Error),
 }
 
 fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
@@ -345,8 +341,8 @@ impl ValClient {
         Ok((checkpoint.height, mapping))
     }
 
-    /// This returns a [futures_util::Stream] of [themelio_structs::Transaction]s
-    /// given a starting height, transaction hash, and a closure that specifies which parent coin to follow,
+    /// Given a starting height, transaction hash, and a closure that specifies which parent coin to follow,
+    /// this returns a [futures_util::Stream] of [themelio_structs::Transaction]s.
     ///
     /// # Examples
     ///
@@ -414,6 +410,8 @@ impl ValClient {
         })
     }
 
+    // this is fallible because the node may not have an indexer, and it's too expensive to
+    // calculate this without one.
     pub fn traverse_fwd(
         &self,
         height: BlockHeight,
@@ -422,12 +420,10 @@ impl ValClient {
     ) -> Result<impl Stream<Item = Transaction>, ValClientError> {
         let seed = (height, txhash);
         let this = self.clone();
-        let picker = Arc::new(picker);
         Ok(futures_util::stream::unfold(
             seed,
             move |(current_height, current_txhash)| {
-                let this = this.clone();
-                let picker = picker.clone();
+                let picker = Arc::new(picker);
                 async move {
                     loop {
                         let fallible_part = async {
@@ -442,33 +438,13 @@ impl ValClient {
                             } else {
                                 return anyhow::Ok(None);
                             };
+                            let coin_id = CoinID {
+                                txhash,
+                                index: idx as u8,
+                            };
+                            self.raw.get_tx_for_coin(coin_id);
 
-                            let next_coin_id = CoinID::new(current_txhash, idx as u8);
-                            let coin_spend_status = this.raw.get_coin_spend(next_coin_id).await?;
-                            match coin_spend_status {
-                                Some(status) => match status {
-                                    CoinSpendStatus::NotSpent => anyhow::Ok(None),
-                                    CoinSpendStatus::Spent((next_txhash, next_height)) => {
-                                        let snap =
-                                            this.snapshot().await?.get_older(next_height).await?;
-                                        let next_transaction = snap
-                                            .get_transaction(next_txhash)
-                                            .await?
-                                            .expect("expected a transaction here");
-                                        anyhow::Ok(Some((
-                                            next_transaction,
-                                            (next_height, next_txhash),
-                                        )))
-                                    }
-                                },
-                                None => {
-                                    // TODO: have the entire function return an error instead of
-                                    // retrying in a loop?
-                                    let err = ValClientError::InvalidNodeConfig(
-                                        anyhow::anyhow!("the node this client is connected to does not index coins, so it could not provide a result"));
-                                    Err(anyhow::anyhow!("{}", err.to_string()))
-                                }
-                            }
+                            anyhow::Ok(Some((current_tx, (next_height, next_coin.txhash))))
                         };
                         match fallible_part.await {
                             Ok(value) => return value,
@@ -483,17 +459,6 @@ impl ValClient {
                 }
             },
         ))
-    }
-
-    // TODO
-    pub fn stream_transactions_from(
-        &self,
-        height: BlockHeight,
-        address: Address,
-    ) -> impl Stream<Item = Transaction> {
-        //
-        smolscale::spawn(async move {}).detach();
-        futures_util::stream::empty()
     }
 }
 
