@@ -3,7 +3,7 @@ use anyhow::Context;
 
 use derivative::Derivative;
 
-use melnet2::{wire::tcp::TcpBackhaul, Backhaul};
+use melnet2::{wire::http::HttpBackhaul, Backhaul};
 
 use nanorpc::{DynRpcTransport, RpcTransport};
 use novasmt::{Database, InMemoryCas, Tree};
@@ -13,17 +13,16 @@ use smol::Task;
 use std::{
     collections::{BTreeMap, HashSet},
     net::SocketAddr,
-    pin::Pin,
     str::FromStr,
     sync::Arc,
     time::Instant,
 };
 
-use futures_util::{Stream, StreamExt, TryStreamExt};
+use futures_util::Stream;
 
 use themelio_structs::{
     Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
-    PoolKey, PoolState, StakeDoc, Transaction, TxHash, TxKind, STAKE_EPOCH,
+    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
@@ -129,7 +128,7 @@ impl ValClient {
     /// A convenience method for connecting to a given address, using [melnet2::TcpBackhaul].
     pub async fn connect_melnet2_tcp(netid: NetID, addr: SocketAddr) -> anyhow::Result<Self> {
         /// Global backhaul for caching connections etc
-        static BACKHAUL: Lazy<TcpBackhaul> = Lazy::new(TcpBackhaul::new);
+        static BACKHAUL: Lazy<HttpBackhaul> = Lazy::new(HttpBackhaul::new);
         let rpc_client = NodeRpcClient(BACKHAUL.connect(addr.to_string().into()).await?);
 
         // one-off set up to "trust" a custom network.

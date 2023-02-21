@@ -1,8 +1,7 @@
 [package]
-name = "themelio-nodeprot"
+name = "melprot"
 version = "0.12.2"
-authors = ["Themelio Labs"]
-edition = "2018"
+edition = "2021"
 
 description = "High-level API for the Themelio full node peer-to-peer protocol."
 license = "MPL-2.0"
@@ -35,8 +34,8 @@ parking_lot = "0.12.1"
 nanorpc = "0.1.12"
 serde_json = "1.0.89"
 smol_str = "0.1.23"
-melnet2 = "0.1.9"
-melnet = "0.2.27"
+melnet2 = "0.3"
+# melnet = "0.2.27"
 futures-util = "0.3.26"
 [dev-dependencies]
 argh = "0.1.9"

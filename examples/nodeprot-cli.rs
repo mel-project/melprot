@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use argh::FromArgs;
-use melnet2::{wire::tcp::TcpBackhaul, Backhaul};
-use themelio_nodeprot::Substate;
-use themelio_nodeprot::{NodeRpcClient, ValClient, ValClientSnapshot};
+
+use melnet2::{wire::http::HttpBackhaul, Backhaul};
+use melprot::Substate;
+use melprot::{NodeRpcClient, ValClient, ValClientSnapshot};
 use themelio_structs::{
     Address, BlockHeight, CoinDataHeight, CoinID, Header, NetID, PoolKey, PoolState, TxHash,
 };
@@ -12,7 +13,7 @@ use tmelcrypt::HashVal;
 fn main() {
     smolscale::block_on(async move {
         let args: Args = argh::from_env();
-        let backhaul = TcpBackhaul::new();
+        let backhaul = HttpBackhaul::new();
         let rpc_client = NodeRpcClient::from(
             backhaul
                 .connect(args.addr.to_string().into())

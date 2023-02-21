@@ -4,9 +4,8 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::Context;
 use async_trait::async_trait;
-use melnet::Request;
+
 use nanorpc::{nanorpc_derive, RpcTransport};
 use novasmt::CompressedProof;
 use serde::{Deserialize, Serialize};
@@ -131,61 +130,6 @@ pub enum NodeRequest {
     GetStakersRaw(BlockHeight),
     GetPartialBlock(BlockHeight, Vec<TxHash>),
     GetSomeCoins(BlockHeight, Address),
-}
-
-/// The LEGACY endpoint
-#[async_trait]
-impl<T: NodeRpcProtocol> melnet::Endpoint<NodeRequest, Vec<u8>> for NodeRpcService<T> {
-    async fn respond(&self, req: Request<NodeRequest>) -> anyhow::Result<Vec<u8>> {
-        let service = &self.0;
-        log::debug!("LEGACY request: {:?}", req.body);
-        match req.body {
-            NodeRequest::SendTx(tx) => {
-                let _ = service.send_tx(tx).await;
-                Ok(vec![])
-            }
-            NodeRequest::GetSummary => {
-                let summary = service.get_summary().await;
-                Ok(stdcode::serialize(&summary)?)
-            }
-            NodeRequest::GetAbbrBlock(height) => {
-                let block = service
-                    .get_abbr_block(height)
-                    .await
-                    .context("no such height")?;
-                Ok(stdcode::serialize(&block)?)
-            }
-            NodeRequest::GetSmtBranch(height, elem, key) => {
-                let branch = service
-                    .get_smt_branch(height, elem, key)
-                    .await
-                    .context("no such height")?;
-                Ok(stdcode::serialize(&branch)?)
-            }
-            NodeRequest::GetStakersRaw(height) => Ok(stdcode::serialize(
-                &service
-                    .get_stakers_raw(height)
-                    .await
-                    .context("no such height")?,
-            )?),
-            NodeRequest::GetPartialBlock(height, mut hvv) => {
-                hvv.sort_unstable();
-                let hvv = hvv;
-
-                if let Some(mut blk) = service.get_block(height).await {
-                    blk.transactions
-                        .retain(|h| hvv.binary_search(&h.hash_nosigs()).is_ok());
-                    Ok(stdcode::serialize(&blk)?)
-                } else {
-                    Ok(vec![])
-                }
-            }
-            NodeRequest::GetSomeCoins(height, address) => {
-                let result = service.get_some_coins(height, address).await;
-                return Ok(stdcode::serialize(&result)?);
-            }
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Error, Debug)]
