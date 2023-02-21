@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use stdcode::StdcodeSerializeExt;
 
 use futures_util::{Stream, StreamExt};
 
@@ -562,6 +563,21 @@ impl Snapshot {
         &self.raw
     }
 
+    /// Gets a transaction by its sorted position within this block.
+    pub async fn get_transaction_by_posn(
+        &self,
+        index: usize,
+    ) -> Result<Option<TxHash>, ValClientError> {
+        let block = self.current_block().await?;
+        let mut sorted_txx: Vec<TxHash> = block
+            .transactions
+            .into_iter()
+            .map(|tx| tx.hash_nosigs())
+            .collect();
+        sorted_txx.sort_unstable();
+        Ok(sorted_txx.get(index).copied())
+    }
+
     /// Gets an older snapshot.
     pub async fn get_older(&self, old_height: BlockHeight) -> Result<Self, ValClientError> {
         if old_height > self.height {
@@ -637,6 +653,25 @@ impl Snapshot {
                         header
                     )));
                 }
+
+                // TODO support dense merkle trees. Right now we assume the transactions are in a SMT
+                let mut transactions_smt = novasmt::Database::new(InMemoryCas::default())
+                    .get_tree([0u8; 32])
+                    .unwrap();
+                for transaction in block.transactions.iter() {
+                    transactions_smt.insert(
+                        transaction.hash_nosigs().stdcode().hash().0,
+                        &transaction.stdcode(),
+                    );
+                }
+                if HashVal(transactions_smt.root_hash()) != block.header.transactions_hash {
+                    return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                        "transactions root does not match: in-header root hash {:?} vs computed {:?}",
+                        block.header.transactions_hash,
+                        HashVal(transactions_smt.root_hash())
+                    )));
+                }
+
                 Ok(block)
             })
             .await
