@@ -27,7 +27,9 @@ use themelio_structs::{
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
 
-use crate::{cache::AsyncCache, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate};
+use crate::{
+    cache::AsyncCache, CoinSpendStatus, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate,
+};
 
 #[derive(Debug, Clone)]
 pub struct TrustedHeight {
@@ -92,6 +94,8 @@ pub enum ValClientError {
     InvalidState(anyhow::Error),
     #[error("error during network communication: {0}")]
     NetworkError(anyhow::Error),
+    #[error("invalid node configuration: {0}")]
+    InvalidNodeConfig(anyhow::Error),
 }
 
 fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
@@ -340,6 +344,24 @@ impl ValClient {
         Ok((checkpoint.height, mapping))
     }
 
+    /// This returns a [futures_util::Stream] of [themelio_structs::Transaction]s
+    /// given a starting height, transaction hash, and a closure that specifies which parent coin to follow,
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let traversal = client.traverse_back(
+    ///     BlockHeight(100000),
+    ///     "674735b7b7e4163f7404715bd6b8433a8db523c52279ad07e2b4e88a6708d873".parse().unwrap(),
+    ///     |tx| {
+    ///         tx.inputs.get(0)
+    ///     }
+    /// );
+    ///
+    /// while let Some(next) = traversal.next().await? {
+    ///     println!("transaction: {:?}", next);
+    /// }
+    /// ```
     pub fn traverse_back(
         &self,
         height: BlockHeight,
@@ -391,9 +413,87 @@ impl ValClient {
         })
     }
 
-    // pub fn traverse_fwd(&self) -> impl futures::Stream<Item = Transaction> {
-    //     todo!()
-    // }
+    pub fn traverse_fwd(
+        &self,
+        height: BlockHeight,
+        txhash: TxHash,
+        picker: impl Fn(&Transaction) -> Option<usize> + Send + 'static,
+    ) -> Result<impl Stream<Item = Transaction>, ValClientError> {
+        let seed = (height, txhash);
+        let this = self.clone();
+        let picker = Arc::new(picker);
+        Ok(futures_util::stream::unfold(
+            seed,
+            move |(current_height, current_txhash)| {
+                let this = this.clone();
+                let picker = picker.clone();
+                async move {
+                    loop {
+                        let fallible_part = async {
+                            let current_snap = this.older_snapshot(current_height).await?;
+                            let current_tx = current_snap
+                                .get_transaction(current_txhash)
+                                .await?
+                                .expect("failed to get current transaction");
+
+                            let idx = if let Some(idx) = picker(&current_tx) {
+                                idx
+                            } else {
+                                return anyhow::Ok(None);
+                            };
+
+                            let next_coin_id = CoinID::new(current_txhash, idx as u8);
+                            let coin_spend_status = this.raw.get_coin_spend(next_coin_id).await?;
+                            match coin_spend_status {
+                                Some(status) => match status {
+                                    CoinSpendStatus::NotSpent => anyhow::Ok(None),
+                                    CoinSpendStatus::Spent((next_txhash, next_height)) => {
+                                        let snap =
+                                            this.snapshot().await?.get_older(next_height).await?;
+                                        let next_transaction = snap
+                                            .get_transaction(next_txhash)
+                                            .await?
+                                            .expect("expected a transaction here");
+                                        anyhow::Ok(Some((
+                                            next_transaction,
+                                            (next_height, next_txhash),
+                                        )))
+                                    }
+                                },
+                                None => {
+                                    // TODO: have the entire function return an error instead of
+                                    // retrying in a loop?
+                                    let err = ValClientError::InvalidNodeConfig(
+                                        anyhow::anyhow!("the node this client is connected to does not index coins, so it could not provide a result"));
+                                    Err(anyhow::anyhow!("{}", err.to_string()))
+                                }
+                            }
+                        };
+                        match fallible_part.await {
+                            Ok(value) => return value,
+                            Err(err) => {
+                                log::warn!(
+                                    "got stuck traversing due to error: {:?}, trying again",
+                                    err
+                                );
+                            }
+                        }
+                    }
+                }
+            },
+        ))
+    }
+
+    // TODO
+    pub fn stream_transactions_from(
+        &self,
+        height: BlockHeight,
+        address: Address,
+    ) -> impl Stream<Item = Transaction> {
+        //
+        smolscale::spawn(async move {}).detach();
+        futures_util::stream::empty()
+    }
 }
 
 /// A "snapshot" of the state at a given state. It essentially encapsulates a NodeClient and a trusted header.

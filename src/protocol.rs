@@ -108,9 +108,17 @@ pub trait NodeRpcProtocol: Send + Sync {
         address: Address,
     ) -> Option<Vec<CoinChange>>;
 
-    async fn get_tx_for_coin(&self, _coin_id: CoinID) -> Option<(TxHash, BlockHeight)> {
+    /// Gets the transaction hash and height for a transaction that spent a given coin ID.
+    /// Returns `None` if the node could not produce a result (e.g. no coin indexer, etc.).
+    async fn get_coin_spend(&self, _coin_id: CoinID) -> Option<CoinSpendStatus> {
         None
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
+pub enum CoinSpendStatus {
+    Spent((TxHash, BlockHeight)),
+    NotSpent,
 }
 
 /// Change in coins.
