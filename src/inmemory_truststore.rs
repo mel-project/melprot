@@ -1,12 +1,12 @@
-use themelio_structs::NetID;
+use themelio_structs::{Checkpoint, NetID};
 
-use crate::{TrustStore, TrustedHeight};
+use crate::TrustStore;
 use std::{collections::HashMap, sync::Arc, sync::RwLock};
 
 /// In-memory trust store.
 #[derive(Clone)]
 pub struct InMemoryTrustStore {
-    inner: Arc<RwLock<HashMap<NetID, TrustedHeight>>>,
+    inner: Arc<RwLock<HashMap<NetID, Checkpoint>>>,
 }
 
 impl Default for InMemoryTrustStore {
@@ -22,10 +22,10 @@ impl InMemoryTrustStore {
             inner: Default::default(),
         }
     }
-} 
+}
 
 impl TrustStore for InMemoryTrustStore {
-    fn set(&self, netid: NetID, trusted: TrustedHeight) {
+    fn set(&self, netid: NetID, trusted: Checkpoint) {
         let mut inner = self.inner.write().unwrap();
         if let Some(old) = inner.get(&netid) {
             if old.height >= trusted.height {
@@ -35,7 +35,7 @@ impl TrustStore for InMemoryTrustStore {
         inner.insert(netid, trusted);
     }
 
-    fn get(&self, netid: NetID) -> Option<TrustedHeight> {
+    fn get(&self, netid: NetID) -> Option<Checkpoint> {
         self.inner.read().unwrap().get(&netid).cloned()
     }
 }

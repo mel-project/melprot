@@ -22,8 +22,8 @@ use stdcode::StdcodeSerializeExt;
 use futures_util::{Stream, StreamExt};
 
 use themelio_structs::{
-    Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
-    PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
+    Address, Block, BlockHeight, Checkpoint, CoinDataHeight, CoinID, CoinValue, ConsensusProof,
+    Header, NetID, PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
@@ -33,46 +33,13 @@ use crate::{
     NodeRpcError, Substate,
 };
 
-#[derive(Debug, Clone)]
-pub struct TrustedHeight {
-    pub height: BlockHeight,
-    pub header_hash: HashVal,
-}
-
-#[derive(Error, Debug)]
-pub enum ParseTrustedHeightError {
-    #[error("expected a ':' character to split the height and header hash")]
-    ParseSplitError,
-    #[error("height is not an integer")]
-    ParseIntError(#[from] std::num::ParseIntError),
-    #[error("failed to parse header hash as a hash")]
-    ParseHeaderHash(#[from] hex::FromHexError),
-}
-
-impl FromStr for TrustedHeight {
-    type Err = ParseTrustedHeightError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (height_str, hash_str) = s
-            .split_once(':')
-            .ok_or(ParseTrustedHeightError::ParseSplitError)?;
-
-        let height = BlockHeight::from_str(height_str)?;
-        let header_hash = HashVal::from_str(hash_str)?;
-
-        Ok(Self {
-            height,
-            header_hash,
-        })
-    }
-}
-
 /// Standard interface for persisting a trusted block.
 pub trait TrustStore {
     /// Set a trusted block in persistent storage, overriding the current
     /// value only if this one has a higher block height.
-    fn set(&self, netid: NetID, trusted: TrustedHeight);
+    fn set(&self, netid: NetID, trusted: Checkpoint);
     /// Get the latest trusted block from persistent storage if one exists.
-    fn get(&self, netid: NetID) -> Option<TrustedHeight>;
+    fn get(&self, netid: NetID) -> Option<Checkpoint>;
 }
 
 /// A higher-level client that validates all information.
@@ -151,7 +118,7 @@ impl Client {
     }
 
     /// Trust a height.
-    pub fn trust(&self, trusted: TrustedHeight) {
+    pub fn trust(&self, trusted: Checkpoint) {
         self.trust_store.set(self.netid, trusted);
     }
 
@@ -168,7 +135,7 @@ impl Client {
     #[deprecated]
     async fn trust_latest(&self) -> Result<(), ValClientError> {
         let summary = self.raw.get_summary().await.map_err(to_neterr)?;
-        self.trust(TrustedHeight {
+        self.trust(Checkpoint {
             height: summary.height,
             header_hash: summary.header.hash(),
         });
@@ -287,7 +254,7 @@ impl Client {
                 )));
             }
             // automatically update trust
-            this.trust(TrustedHeight {
+            this.trust(Checkpoint {
                 height,
                 header_hash: header.hash(),
             });
