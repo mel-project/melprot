@@ -4,7 +4,7 @@ use argh::FromArgs;
 
 use melnet2::{wire::http::HttpBackhaul, Backhaul};
 use melprot::Substate;
-use melprot::{NodeRpcClient, ValClient, ValClientSnapshot};
+use melprot::{Client, NodeRpcClient, Snapshot};
 use themelio_structs::{
     Address, BlockHeight, CoinDataHeight, CoinID, Header, NetID, PoolKey, PoolState, TxHash,
 };
@@ -22,7 +22,7 @@ fn main() {
         );
 
         // one-off set up to "trust" a custom network.
-        let client = ValClient::new(args.netid, rpc_client);
+        let client = Client::new(args.netid, rpc_client);
         let snapshot = client.insecure_latest_snapshot().await.unwrap();
 
         match args.client_method {
@@ -90,7 +90,7 @@ fn main() {
     });
 }
 
-async fn print_snapshot_info(snapshot: ValClientSnapshot, args: SnapshotArgs) {
+async fn print_snapshot_info(snapshot: Snapshot, args: SnapshotArgs) {
     let current_block = snapshot.current_block().await.expect("current_block error");
     // TODO: snapshot.current_block_with_known()
     let current_header = snapshot.current_header();

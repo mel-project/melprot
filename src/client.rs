@@ -15,10 +15,10 @@ use std::{
     net::SocketAddr,
     str::FromStr,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 
 use themelio_structs::{
     Address, Block, BlockHeight, CoinDataHeight, CoinID, CoinValue, ConsensusProof, Header, NetID,
@@ -28,7 +28,8 @@ use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
 
 use crate::{
-    cache::AsyncCache, CoinSpendStatus, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate,
+    cache::AsyncCache, CoinChange, CoinSpendStatus, InMemoryTrustStore, NodeRpcClient,
+    NodeRpcError, Substate,
 };
 
 #[derive(Debug, Clone)]
@@ -76,7 +77,7 @@ pub trait TrustStore {
 /// A higher-level client that validates all information.
 #[derive(Derivative)]
 #[derivative(Debug, Clone(bound = ""))]
-pub struct ValClient {
+pub struct Client {
     netid: NetID,
     #[derivative(Debug = "ignore")]
     trust_store: Arc<dyn TrustStore + Send + Sync + 'static>,
@@ -103,8 +104,8 @@ fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
     ValClientError::NetworkError(anyhow::anyhow!("{}", e.to_string()))
 }
 
-impl ValClient {
-    /// Creates a new ValClient, hardcoding the default, in-memory trust store.
+impl Client {
+    /// Creates a new Client, hardcoding the default, in-memory trust store.
     pub fn new<Net: RpcTransport>(netid: NetID, remote: NodeRpcClient<Net>) -> Self
     where
         Net::Error: Into<anyhow::Error>,
@@ -112,7 +113,7 @@ impl ValClient {
         Self::new_with_truststore(netid, remote, InMemoryTrustStore::new())
     }
 
-    /// Creates a new ValClient.
+    /// Creates a new Client.
     pub fn new_with_truststore<Net: RpcTransport>(
         netid: NetID,
         remote: NodeRpcClient<Net>,
@@ -129,8 +130,8 @@ impl ValClient {
         }
     }
 
-    /// A convenience method for connecting to a given address, using [melnet2::TcpBackhaul].
-    pub async fn connect_melnet2_tcp(netid: NetID, addr: SocketAddr) -> anyhow::Result<Self> {
+    /// A convenience method for connecting to a given address.
+    pub async fn connect_http(netid: NetID, addr: SocketAddr) -> anyhow::Result<Self> {
         /// Global backhaul for caching connections etc
         static BACKHAUL: Lazy<HttpBackhaul> = Lazy::new(HttpBackhaul::new);
         let rpc_client = NodeRpcClient(BACKHAUL.connect(addr.to_string().into()).await?);
@@ -156,7 +157,7 @@ impl ValClient {
     /// NOTE: this is only used for testing (e.g. from CLI utils, etc.)
     /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
     #[deprecated]
-    pub async fn insecure_latest_snapshot(&self) -> Result<ValClientSnapshot, ValClientError> {
+    pub async fn insecure_latest_snapshot(&self) -> Result<Snapshot, ValClientError> {
         self.trust_latest().await?;
         self.snapshot().await
     }
@@ -174,7 +175,7 @@ impl ValClient {
     }
 
     /// Obtains a validated snapshot based on what height was trusted.
-    pub async fn snapshot(&self) -> Result<ValClientSnapshot, ValClientError> {
+    pub async fn snapshot(&self) -> Result<Snapshot, ValClientError> {
         let _c = self.raw.clone();
 
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
@@ -189,7 +190,7 @@ impl ValClient {
                 Ok((summary.height, summary.header, summary.proof))
             })
             .await?;
-        Ok(ValClientSnapshot {
+        Ok(Snapshot {
             height,
             header,
             raw: self.raw.clone(),
@@ -198,10 +199,7 @@ impl ValClient {
     }
 
     /// Convenience function to obtains a validated snapshot based on a given height.
-    pub async fn older_snapshot(
-        &self,
-        height: BlockHeight,
-    ) -> Result<ValClientSnapshot, ValClientError> {
+    pub async fn older_snapshot(&self, height: BlockHeight) -> Result<Snapshot, ValClientError> {
         let snap = self.snapshot().await?;
         snap.get_older(height).await
     }
@@ -354,7 +352,7 @@ impl ValClient {
     ///     BlockHeight(100000),
     ///     "674735b7b7e4163f7404715bd6b8433a8db523c52279ad07e2b4e88a6708d873".parse().unwrap(),
     ///     |tx| {
-    ///         tx.inputs.get(0)
+    ///         Some(0)
     ///     }
     /// );
     ///
@@ -413,6 +411,7 @@ impl ValClient {
         })
     }
 
+    /// Traverses the coin graph, forwards.
     pub fn traverse_fwd(
         &self,
         height: BlockHeight,
@@ -446,14 +445,19 @@ impl ValClient {
                             let coin_spend_status = this.raw.get_coin_spend(next_coin_id).await?;
                             match coin_spend_status {
                                 Some(status) => match status {
-                                    CoinSpendStatus::NotSpent => anyhow::Ok(None),
+                                    CoinSpendStatus::NotSpent => {
+                                        // Check that it *really is* unspent
+                                        if current_snap.get_coin(next_coin_id).await?.is_some() {
+                                            anyhow::bail!("server lied to us by saying that this coin was not spent")
+                                        }
+                                        anyhow::Ok(None)
+                                    }
                                     CoinSpendStatus::Spent((next_txhash, next_height)) => {
-                                        let snap =
-                                            this.snapshot().await?.get_older(next_height).await?;
+                                        let snap = current_snap.get_older(next_height).await?;
                                         let next_transaction = snap
                                             .get_transaction(next_txhash)
                                             .await?
-                                            .expect("expected a transaction here");
+                                            .context("node lied to us about a transaction here")?;
                                         anyhow::Ok(Some((
                                             next_transaction,
                                             (next_height, next_txhash),
@@ -484,28 +488,75 @@ impl ValClient {
         ))
     }
 
-    // TODO
-    pub fn stream_transactions_from(
+    /// Returns a stream of all transactions relevant to the particular address --- meaning all transactions that either create or spend coins with that address.
+    pub fn stream_transactions(
         &self,
         height: BlockHeight,
         address: Address,
-    ) -> impl Stream<Item = Transaction> {
-        //
-        smolscale::spawn(async move {}).detach();
-        futures_util::stream::empty()
+    ) -> impl Stream<Item = Transaction> + '_ {
+        self.stream_snapshots(height)
+            .then(move |snapshot| async move {
+                let changes = loop {
+                    match snapshot.get_coin_changes(address).await {
+                        Ok(changes) => break changes,
+                        Err(err) => {
+                            log::warn!("error getting changes for {}: {err}", snapshot.height)
+                        }
+                    }
+                };
+                futures_util::stream::iter(changes.into_iter()).filter_map(move |change| {
+                    let snapshot = snapshot.clone();
+                    async move {
+                        loop {
+                            let fallible = async {
+                                match change {
+                                    CoinChange::Add(coin_id) => {
+                                        anyhow::Ok(snapshot.get_transaction(coin_id.txhash).await?)
+                                    }
+                                    CoinChange::Delete(coin_id, txhash) => {
+                                        anyhow::Ok(snapshot.get_transaction(txhash).await?)
+                                    }
+                                }
+                            };
+                            match fallible.await {
+                                Err(err) => {
+                                    log::warn!("could not resolve change {:?}: {err}", change)
+                                }
+                                Ok(val) => return val,
+                            }
+                        }
+                    }
+                })
+            })
+            .flatten()
+    }
+
+    /// Returns a stream of all snapshots after the given height.
+    pub fn stream_snapshots(&self, height: BlockHeight) -> impl Stream<Item = Snapshot> + '_ {
+        futures_util::stream::iter(height.0..).then(move |height| async move {
+            loop {
+                match self.older_snapshot(height.into()).await {
+                    Ok(snap) => return snap,
+                    Err(err) => {
+                        log::warn!("error snapping {height}: {err}, retrying in a while");
+                        smol::Timer::after(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        })
     }
 }
 
 /// A "snapshot" of the state at a given state. It essentially encapsulates a NodeClient and a trusted header.
 #[derive(Clone)]
-pub struct ValClientSnapshot {
+pub struct Snapshot {
     height: BlockHeight,
     header: Header,
     raw: Arc<NodeRpcClient<DynRpcTransport>>,
     cache: Arc<AsyncCache>,
 }
 
-impl ValClientSnapshot {
+impl Snapshot {
     /// Gets a reference to the raw, unvalidating raw client.
     pub fn get_raw(&self) -> &NodeRpcClient<DynRpcTransport> {
         &self.raw
@@ -720,6 +771,103 @@ impl ValClientSnapshot {
     ) -> Result<Option<Transaction>, ValClientError> {
         self.get_smt_value_serde(Substate::Transactions, txhash)
             .await
+    }
+
+    /// Gets all the coin changes relevant to this address, at this height.
+    pub async fn get_coin_changes(
+        &self,
+        address: Address,
+    ) -> Result<Vec<CoinChange>, ValClientError> {
+        // We first just ask the raw RPC endpoint
+        let claimed_changes = self
+            .raw
+            .get_coin_changes(self.height, address)
+            .await
+            .context("failed to get coin changes")
+            .map_err(ValClientError::NetworkError)?
+            .ok_or_else(|| {
+                ValClientError::InvalidNodeConfig(anyhow::anyhow!(
+                    "coin index not available on the server"
+                ))
+            })?;
+        // Then, we make sure the coin changes are legit. This involves 4 things:
+        // - Every coin added must appear in this snapshot, unless it is spent within the same height.
+        // - Every coin added must have a txhash pointing to a transaction that does exist in this block.
+        // - Every coin deleted must NOT appear in this snapshot
+        // - The "net" coins added must be reflected in the change to the coin count of this address.
+        // We check these things in sequence
+        let net_coins_added = claimed_changes
+            .iter()
+            .filter_map(|change| {
+                if let CoinChange::Add(coinid) = change {
+                    if !claimed_changes.iter().any(|other| match other {
+                        CoinChange::Add(_) => false,
+                        CoinChange::Delete(other_coinid, _) => other_coinid == coinid,
+                    }) {
+                        return Some(*coinid);
+                    }
+                }
+                None
+            })
+            .collect::<Vec<_>>();
+        for &coin in net_coins_added.iter() {
+            if self.get_coin(coin).await?.is_none() {
+                return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                    "invalid coin {coin} claimed to be added, since not found in state"
+                )));
+            }
+        }
+        for &coin in claimed_changes.iter() {
+            match coin {
+                CoinChange::Add(coinid) => {
+                    if self.get_transaction(coinid.txhash).await?.is_none()
+                        && coinid != CoinID::proposer_reward(self.height)
+                    {
+                        return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                        "invalid coin {coinid} claimed to be added, since not found in transactions"
+                    )));
+                    }
+                }
+                CoinChange::Delete(coinid, txhash) => {
+                    if self.get_coin(coinid).await?.is_some() {
+                        return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                            "invalid deletion of {coinid} claimed, since it's still around lol"
+                        )));
+                    }
+                    if self.get_transaction(txhash).await?.is_none() {
+                        return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                            "invalid deletion of {coinid} claimed, since the claimed transaction that deleted it is nowhere to be found"
+                        )));
+                    }
+                }
+            }
+        }
+        let net_count_change = claimed_changes
+            .iter()
+            .map(|change| match change {
+                CoinChange::Add(_) => 1i128,
+                CoinChange::Delete(..) => -1i128,
+            })
+            .sum::<i128>();
+        let previous_count = self
+            .get_older(self.height.0.saturating_sub(1).into())
+            .await?
+            .get_coin_count(address)
+            .await?
+            .ok_or_else(|| {
+                ValClientError::InvalidNodeConfig(anyhow::anyhow!(
+                    "node does not keep track of previous count"
+                ))
+            })?;
+        let current_count = self.get_coin_count(address).await?.ok_or_else(|| {
+            ValClientError::InvalidNodeConfig(anyhow::anyhow!(
+                "node does not keep track of current count"
+            ))
+        })?;
+        if current_count as i128 - previous_count as i128 != net_count_change {
+            return Err(ValClientError::InvalidState(anyhow::anyhow!("claimed a coin count change of {net_count_change} when in reality it changed from {previous_count} to {current_count}")));
+        }
+        Ok(claimed_changes)
     }
 
     /// Helper for serde.

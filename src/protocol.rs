@@ -125,7 +125,7 @@ pub enum CoinSpendStatus {
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
 pub enum CoinChange {
     Add(CoinID),
-    Delete(CoinID),
+    Delete(CoinID, TxHash),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
