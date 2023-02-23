@@ -13,7 +13,6 @@ use smol::Task;
 use std::{
     collections::{BTreeMap, HashSet},
     net::SocketAddr,
-    str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -127,7 +126,7 @@ impl Client {
     #[deprecated]
     pub async fn insecure_latest_snapshot(&self) -> Result<Snapshot, ValClientError> {
         self.trust_latest().await?;
-        self.snapshot().await
+        self.latest_snapshot().await
     }
 
     /// NOTE: this is only used for testing (e.g. from CLI utils, etc.)
@@ -143,7 +142,7 @@ impl Client {
     }
 
     /// Obtains a validated snapshot based on what height was trusted.
-    pub async fn snapshot(&self) -> Result<Snapshot, ValClientError> {
+    pub async fn latest_snapshot(&self) -> Result<Snapshot, ValClientError> {
         let _c = self.raw.clone();
 
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
@@ -167,8 +166,8 @@ impl Client {
     }
 
     /// Convenience function to obtains a validated snapshot based on a given height.
-    pub async fn older_snapshot(&self, height: BlockHeight) -> Result<Snapshot, ValClientError> {
-        let snap = self.snapshot().await?;
+    pub async fn snapshot(&self, height: BlockHeight) -> Result<Snapshot, ValClientError> {
+        let snap = self.latest_snapshot().await?;
         snap.get_older(height).await
     }
 
@@ -344,7 +343,7 @@ impl Client {
                 loop {
                     let fallible_part = async {
                         // we need a snapshot at *this* height, because only that can let us use get_transaction
-                        let current_snap = this.older_snapshot(current_height).await?;
+                        let current_snap = this.snapshot(current_height).await?;
                         let current_tx = current_snap
                             .get_transaction(current_txhash)
                             .await?
@@ -397,7 +396,7 @@ impl Client {
                 async move {
                     loop {
                         let fallible_part = async {
-                            let current_snap = this.older_snapshot(current_height).await?;
+                            let current_snap = this.snapshot(current_height).await?;
                             let current_tx = current_snap
                                 .get_transaction(current_txhash)
                                 .await?
@@ -503,7 +502,7 @@ impl Client {
     pub fn stream_snapshots(&self, height: BlockHeight) -> impl Stream<Item = Snapshot> + '_ {
         futures_util::stream::iter(height.0..).then(move |height| async move {
             loop {
-                match self.older_snapshot(height.into()).await {
+                match self.snapshot(height.into()).await {
                     Ok(snap) => return snap,
                     Err(err) => {
                         log::warn!("error snapping {height}: {err}, retrying in a while");

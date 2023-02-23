@@ -27,12 +27,12 @@ fn main() {
 
         match args.client_method {
             ClientMethod::Snapshot(args) => {
-                let snapshot = client.snapshot().await.expect("snapshot error");
+                let snapshot = client.latest_snapshot().await.expect("snapshot error");
                 print_snapshot_info(snapshot, args).await;
             }
             ClientMethod::OlderSnapshot(args) => {
                 if let Some(height) = args.height {
-                    client.older_snapshot(height).await.expect("snapshot error");
+                    client.snapshot(height).await.expect("snapshot error");
                     print_snapshot_info(snapshot, args).await;
                 }
             }
