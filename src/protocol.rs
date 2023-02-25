@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use nanorpc::{nanorpc_derive, RpcTransport};
 use novasmt::CompressedProof;
 use serde::{Deserialize, Serialize};
-use themelio_structs::{
+use melstructs::{
     AbbrBlock, Address, Block, BlockHeight, CoinID, ConsensusProof, Header, NetID, Transaction,
     TxHash,
 };

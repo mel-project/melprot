@@ -1,4 +1,4 @@
-use themelio_structs::{Checkpoint, NetID};
+use melstructs::{Checkpoint, NetID};
 
 use crate::TrustStore;
 use std::{collections::HashMap, sync::Arc, sync::RwLock};

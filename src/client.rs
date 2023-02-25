@@ -20,7 +20,7 @@ use stdcode::StdcodeSerializeExt;
 
 use futures_util::{Stream, StreamExt};
 
-use themelio_structs::{
+use melstructs::{
     Address, Block, BlockHeight, Checkpoint, CoinDataHeight, CoinID, CoinValue, ConsensusProof,
     Header, NetID, PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
@@ -55,9 +55,9 @@ pub struct Client {
     raw: Arc<NodeRpcClient<DynRpcTransport>>,
 }
 
-/// Errors that a ValClient may return
+/// Errors that a Client may return
 #[derive(Error, Debug)]
-pub enum ValClientError {
+pub enum ClientError {
     #[error("state validation error: {0}")]
     InvalidState(anyhow::Error),
     #[error("error during network communication: {0}")]
@@ -66,9 +66,9 @@ pub enum ValClientError {
     InvalidNodeConfig(anyhow::Error),
 }
 
-fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ValClientError {
+fn to_neterr(e: NodeRpcError<anyhow::Error>) -> ClientError {
     // TODO something a little more intelligent
-    ValClientError::NetworkError(anyhow::anyhow!("{}", e.to_string()))
+    ClientError::NetworkError(anyhow::anyhow!("{}", e.to_string()))
 }
 
 impl Client {
@@ -121,18 +121,8 @@ impl Client {
         self.trust_store.set(self.netid, trusted);
     }
 
-    /// NOTE: this is only used for testing (e.g. from CLI utils, etc.)
-    /// Obtains the latest validated snapshot. Use this method first to get something to validate info against.
-    #[deprecated]
-    pub async fn insecure_latest_snapshot(&self) -> Result<Snapshot, ValClientError> {
-        self.trust_latest().await?;
-        self.latest_snapshot().await
-    }
-
-    /// NOTE: this is only used for testing (e.g. from CLI utils, etc.)
-    /// Trust the latest height
-    #[deprecated]
-    async fn trust_latest(&self) -> Result<(), ValClientError> {
+    /// Trust the latest height COMPLETELY BLINDLY
+    pub async fn dangerously_trust_latest(&self) -> Result<(), ClientError> {
         let summary = self.raw.get_summary().await.map_err(to_neterr)?;
         self.trust(Checkpoint {
             height: summary.height,
@@ -142,7 +132,7 @@ impl Client {
     }
 
     /// Obtains a validated snapshot based on what height was trusted.
-    pub async fn latest_snapshot(&self) -> Result<Snapshot, ValClientError> {
+    pub async fn latest_snapshot(&self) -> Result<Snapshot, ClientError> {
         let _c = self.raw.clone();
 
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
@@ -166,7 +156,7 @@ impl Client {
     }
 
     /// Convenience function to obtains a validated snapshot based on a given height.
-    pub async fn snapshot(&self, height: BlockHeight) -> Result<Snapshot, ValClientError> {
+    pub async fn snapshot(&self, height: BlockHeight) -> Result<Snapshot, ClientError> {
         let snap = self.latest_snapshot().await?;
         snap.get_older(height).await
     }
@@ -178,7 +168,7 @@ impl Client {
         height: BlockHeight,
         header: Header,
         proof: ConsensusProof,
-    ) -> Task<Result<(), ValClientError>> {
+    ) -> Task<Result<(), ClientError>> {
         let this = self.clone();
         smolscale::spawn(async move {
             let safe_stakers = {
@@ -200,7 +190,7 @@ impl Client {
                             .await
                             .map_err(to_neterr)?
                             .ok_or_else(|| {
-                                ValClientError::InvalidState(anyhow::anyhow!(
+                                ClientError::InvalidState(anyhow::anyhow!(
                                     "old block gone while validating height"
                                 ))
                             })?;
@@ -219,7 +209,7 @@ impl Client {
                             .await
                             .map_err(to_neterr)?
                             .context("old abbr block gone while validating height")
-                            .map_err(ValClientError::InvalidState)?;
+                            .map_err(ClientError::InvalidState)?;
                         this.validate_height(epoch_ending_height, old_block.header, old_proof)
                             .await?;
                     } else {
@@ -233,7 +223,7 @@ impl Client {
             for (_, doc) in safe_stakers.iter() {
                 let doc: StakeDoc = stdcode::deserialize(&doc)
                     .context("cannot deserialize stakedoc")
-                    .map_err(ValClientError::InvalidState)?;
+                    .map_err(ClientError::InvalidState)?;
                 if height.epoch() >= doc.e_start && height.epoch() < doc.e_post_end {
                     total_votes += doc.syms_staked;
                     if let Some(sig) = proof.get(&doc.pubkey) {
@@ -245,7 +235,7 @@ impl Client {
             }
 
             if good_votes < total_votes * 2 / 3 {
-                return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                return Err(ClientError::InvalidState(anyhow::anyhow!(
                     "remote height {} has insufficient votes (total_votes = {}, good_votes = {})",
                     height,
                     total_votes,
@@ -262,14 +252,12 @@ impl Client {
     }
 
     /// Helper function to obtain the trusted staker set.
-    async fn get_trusted_stakers(
-        &self,
-    ) -> Result<(BlockHeight, Tree<InMemoryCas>), ValClientError> {
+    async fn get_trusted_stakers(&self) -> Result<(BlockHeight, Tree<InMemoryCas>), ClientError> {
         let checkpoint = self
             .trust_store
             .get(self.netid)
             .context("expected to find a trusted block while fetching trusted stakers")
-            .map_err(ValClientError::InvalidState)?;
+            .map_err(ClientError::InvalidState)?;
 
         let temp_forest = Database::new(InMemoryCas::default());
         let stakers = self
@@ -278,7 +266,7 @@ impl Client {
             .await
             .map_err(to_neterr)?
             .context("server did not give us the stakers for the height")
-            .map_err(ValClientError::InvalidState)?;
+            .map_err(ClientError::InvalidState)?;
         // first obtain trusted SMT branch
         let (abbr_block, _) = self
             .raw
@@ -286,9 +274,9 @@ impl Client {
             .await
             .map_err(to_neterr)?
             .context("server did not give us the abbr block for the height")
-            .map_err(ValClientError::InvalidState)?;
+            .map_err(ClientError::InvalidState)?;
         if abbr_block.header.hash() != checkpoint.header_hash {
-            return Err(ValClientError::InvalidState(anyhow::anyhow!(
+            return Err(ClientError::InvalidState(anyhow::anyhow!(
                 "remote block contradicted trusted block hash: trusted {}, yet got {}:{}:{}",
                 checkpoint.header_hash,
                 checkpoint.height,
@@ -302,14 +290,14 @@ impl Client {
             mapping.insert(k.0, &v);
         }
         if mapping.root_hash() != trusted_stake_hash.0 {
-            return Err(ValClientError::InvalidState(anyhow::anyhow!(
+            return Err(ClientError::InvalidState(anyhow::anyhow!(
                 "remote staker set contradicted valid header"
             )));
         }
         Ok((checkpoint.height, mapping))
     }
 
-    /// This returns a [futures_util::Stream] of [themelio_structs::Transaction]s
+    /// This returns a [futures_util::Stream] of [melstructs::Transaction]s
     /// given a starting height, transaction hash, and a closure that specifies which parent coin to follow,
     ///
     /// # Examples
@@ -384,7 +372,7 @@ impl Client {
         height: BlockHeight,
         txhash: TxHash,
         picker: impl Fn(&Transaction) -> Option<usize> + Send + 'static,
-    ) -> Result<impl Stream<Item = Transaction>, ValClientError> {
+    ) -> Result<impl Stream<Item = Transaction>, ClientError> {
         let seed = (height, txhash);
         let this = self.clone();
         let picker = Arc::new(picker);
@@ -434,7 +422,7 @@ impl Client {
                                 None => {
                                     // TODO: have the entire function return an error instead of
                                     // retrying in a loop?
-                                    let err = ValClientError::InvalidNodeConfig(
+                                    let err = ClientError::InvalidNodeConfig(
                                         anyhow::anyhow!("the node this client is connected to does not index coins, so it could not provide a result"));
                                     Err(anyhow::anyhow!("{}", err.to_string()))
                                 }
@@ -519,13 +507,13 @@ impl Client {
 pub struct Snapshot {
     height: BlockHeight,
     header: Header,
-    raw: Arc<NodeRpcClient<DynRpcTransport>>,
+    raw: Arc<NodeRpcClient>,
     cache: Arc<AsyncCache>,
 }
 
 impl Snapshot {
     /// Gets a reference to the raw, unvalidating raw client.
-    pub fn get_raw(&self) -> &NodeRpcClient<DynRpcTransport> {
+    pub fn get_raw(&self) -> &NodeRpcClient {
         &self.raw
     }
 
@@ -533,7 +521,7 @@ impl Snapshot {
     pub async fn get_transaction_by_posn(
         &self,
         index: usize,
-    ) -> Result<Option<TxHash>, ValClientError> {
+    ) -> Result<Option<TxHash>, ClientError> {
         let block = self.current_block().await?;
         let mut sorted_txx: Vec<TxHash> = block
             .transactions
@@ -545,9 +533,9 @@ impl Snapshot {
     }
 
     /// Gets an older snapshot.
-    pub async fn get_older(&self, old_height: BlockHeight) -> Result<Self, ValClientError> {
+    pub async fn get_older(&self, old_height: BlockHeight) -> Result<Self, ClientError> {
         if old_height > self.height {
-            return Err(ValClientError::InvalidState(anyhow::anyhow!(
+            return Err(ClientError::InvalidState(anyhow::anyhow!(
                 "cannot travel into the future"
             )));
         }
@@ -566,8 +554,8 @@ impl Snapshot {
                     .await?;
                 let old_elem: Header = stdcode::deserialize(&val)
                     .context("cannot deserialize header")
-                    .map_err(ValClientError::InvalidState)?;
-                Ok::<_, ValClientError>(old_elem)
+                    .map_err(ClientError::InvalidState)?;
+                Ok::<_, ClientError>(old_elem)
             })
             .await?;
         // this can never possibly be bad unless everything is horribly untrustworthy
@@ -586,14 +574,14 @@ impl Snapshot {
     }
 
     /// Helper function to obtain the proposer reward amount.
-    pub async fn get_proposer_reward(&self) -> Result<CoinValue, ValClientError> {
+    pub async fn get_proposer_reward(&self) -> Result<CoinValue, ClientError> {
         let reward_coin = self.get_coin(CoinID::proposer_reward(self.height)).await?;
         let reward_amount = reward_coin.map(|v| v.coin_data.value).unwrap_or_default();
         Ok(reward_amount)
     }
 
     /// Gets the whole block at this height.
-    pub async fn current_block(&self) -> Result<Block, ValClientError> {
+    pub async fn current_block(&self) -> Result<Block, ClientError> {
         self.current_block_with_known(|_| None).await
     }
 
@@ -601,7 +589,7 @@ impl Snapshot {
     pub async fn current_block_with_known(
         &self,
         get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
-    ) -> Result<Block, ValClientError> {
+    ) -> Result<Block, ClientError> {
         self.cache
             .get_or_try_fill(("block", self.height), async {
                 let header = self.current_header();
@@ -611,9 +599,9 @@ impl Snapshot {
                     .await
                     .map_err(to_neterr)?
                     .context("block disappeared from under our feet")
-                    .map_err(ValClientError::InvalidState)?;
+                    .map_err(ClientError::InvalidState)?;
                 if block.header != header {
-                    return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                    return Err(ClientError::InvalidState(anyhow::anyhow!(
                         "block header does not match: block header {:?} vs snapshot header {:?}",
                         block.header,
                         header
@@ -631,7 +619,7 @@ impl Snapshot {
                     );
                 }
                 if HashVal(transactions_smt.root_hash()) != block.header.transactions_hash {
-                    return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                    return Err(ClientError::InvalidState(anyhow::anyhow!(
                         "transactions root does not match: in-header root hash {:?} vs computed {:?}",
                         block.header.transactions_hash,
                         HashVal(transactions_smt.root_hash())
@@ -644,17 +632,17 @@ impl Snapshot {
     }
 
     /// Gets a historical header.
-    pub async fn get_history(&self, height: BlockHeight) -> Result<Option<Header>, ValClientError> {
+    pub async fn get_history(&self, height: BlockHeight) -> Result<Option<Header>, ClientError> {
         self.get_smt_value_serde(Substate::History, height).await
     }
 
     /// Gets a coin.
-    pub async fn get_coin(&self, coinid: CoinID) -> Result<Option<CoinDataHeight>, ValClientError> {
+    pub async fn get_coin(&self, coinid: CoinID) -> Result<Option<CoinDataHeight>, ClientError> {
         self.get_smt_value_serde(Substate::Coins, coinid).await
     }
 
     /// Gets a coin count.
-    pub async fn get_coin_count(&self, covhash: Address) -> Result<Option<u64>, ValClientError> {
+    pub async fn get_coin_count(&self, covhash: Address) -> Result<Option<u64>, ClientError> {
         let val = self
             .get_smt_value(Substate::Coins, covhash.0.hash_keyed(b"coin_count"))
             .await?;
@@ -665,7 +653,7 @@ impl Snapshot {
                 stdcode::deserialize(&val)
                     .context("bad error count")
                     .map_err(|e| {
-                        ValClientError::InvalidState(anyhow::anyhow!(
+                        ClientError::InvalidState(anyhow::anyhow!(
                             "bad coin count {:?} {:?}",
                             val,
                             e.to_string()
@@ -679,7 +667,7 @@ impl Snapshot {
     pub async fn get_coins(
         &self,
         covhash: Address,
-    ) -> Result<Option<BTreeMap<CoinID, CoinDataHeight>>, ValClientError> {
+    ) -> Result<Option<BTreeMap<CoinID, CoinDataHeight>>, ClientError> {
         self.cache
             .get_or_try_fill(("coins", self.height, covhash), async {
                 let coins = self
@@ -692,7 +680,7 @@ impl Snapshot {
                     let count = self.get_coin_count(covhash).await?;
                     if let Some(count) = count {
                         if count != coins.len() as u64 {
-                            return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                            return Err(ClientError::InvalidState(anyhow::anyhow!(
                                 "got incomplete list of {} coins rather than {}",
                                 coins.len(),
                                 count
@@ -709,8 +697,8 @@ impl Snapshot {
                                 .get_coin(coin)
                                 .await?
                                 .context("invalid data received while getting coin list")
-                                .map_err(ValClientError::InvalidState)?;
-                            Ok::<_, ValClientError>(r)
+                                .map_err(ClientError::InvalidState)?;
+                            Ok::<_, ClientError>(r)
                         };
                         coin_futs.insert(coin, fut_data);
                     }
@@ -732,7 +720,7 @@ impl Snapshot {
     pub async fn get_coin_spent_here(
         &self,
         coinid: CoinID,
-    ) -> Result<Option<CoinDataHeight>, ValClientError> {
+    ) -> Result<Option<CoinDataHeight>, ClientError> {
         // First we try the transactions mapping in this block.
         if let Some(tx) = self.get_transaction(coinid.txhash).await? {
             // Great. Now we can reconstruct the CDH from the transaction.
@@ -752,7 +740,7 @@ impl Snapshot {
     }
 
     /// Gets a pool info.
-    pub async fn get_pool(&self, denom: PoolKey) -> Result<Option<PoolState>, ValClientError> {
+    pub async fn get_pool(&self, denom: PoolKey) -> Result<Option<PoolState>, ClientError> {
         self.get_smt_value_serde(Substate::Pools, denom).await
     }
 
@@ -760,7 +748,7 @@ impl Snapshot {
     pub async fn get_stake(
         &self,
         staking_txhash: HashVal,
-    ) -> Result<Option<StakeDoc>, ValClientError> {
+    ) -> Result<Option<StakeDoc>, ClientError> {
         self.get_smt_value_serde(Substate::Stakes, staking_txhash)
             .await
     }
@@ -769,25 +757,22 @@ impl Snapshot {
     pub async fn get_transaction(
         &self,
         txhash: TxHash,
-    ) -> Result<Option<Transaction>, ValClientError> {
+    ) -> Result<Option<Transaction>, ClientError> {
         self.get_smt_value_serde(Substate::Transactions, txhash)
             .await
     }
 
     /// Gets all the coin changes relevant to this address, at this height.
-    pub async fn get_coin_changes(
-        &self,
-        address: Address,
-    ) -> Result<Vec<CoinChange>, ValClientError> {
+    pub async fn get_coin_changes(&self, address: Address) -> Result<Vec<CoinChange>, ClientError> {
         // We first just ask the raw RPC endpoint
         let claimed_changes = self
             .raw
             .get_coin_changes(self.height, address)
             .await
             .context("failed to get coin changes")
-            .map_err(ValClientError::NetworkError)?
+            .map_err(ClientError::NetworkError)?
             .ok_or_else(|| {
-                ValClientError::InvalidNodeConfig(anyhow::anyhow!(
+                ClientError::InvalidNodeConfig(anyhow::anyhow!(
                     "coin index not available on the server"
                 ))
             })?;
@@ -813,7 +798,7 @@ impl Snapshot {
             .collect::<Vec<_>>();
         for &coin in net_coins_added.iter() {
             if self.get_coin(coin).await?.is_none() {
-                return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                return Err(ClientError::InvalidState(anyhow::anyhow!(
                     "invalid coin {coin} claimed to be added, since not found in state"
                 )));
             }
@@ -824,19 +809,19 @@ impl Snapshot {
                     if self.get_transaction(coinid.txhash).await?.is_none()
                         && coinid != CoinID::proposer_reward(self.height)
                     {
-                        return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                        return Err(ClientError::InvalidState(anyhow::anyhow!(
                         "invalid coin {coinid} claimed to be added, since not found in transactions"
                     )));
                     }
                 }
                 CoinChange::Delete(coinid, txhash) => {
                     if self.get_coin(coinid).await?.is_some() {
-                        return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                        return Err(ClientError::InvalidState(anyhow::anyhow!(
                             "invalid deletion of {coinid} claimed, since it's still around lol"
                         )));
                     }
                     if self.get_transaction(txhash).await?.is_none() {
-                        return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                        return Err(ClientError::InvalidState(anyhow::anyhow!(
                             "invalid deletion of {coinid} claimed, since the claimed transaction that deleted it is nowhere to be found"
                         )));
                     }
@@ -856,17 +841,17 @@ impl Snapshot {
             .get_coin_count(address)
             .await?
             .ok_or_else(|| {
-                ValClientError::InvalidNodeConfig(anyhow::anyhow!(
+                ClientError::InvalidNodeConfig(anyhow::anyhow!(
                     "node does not keep track of previous count"
                 ))
             })?;
         let current_count = self.get_coin_count(address).await?.ok_or_else(|| {
-            ValClientError::InvalidNodeConfig(anyhow::anyhow!(
+            ClientError::InvalidNodeConfig(anyhow::anyhow!(
                 "node does not keep track of current count"
             ))
         })?;
         if current_count as i128 - previous_count as i128 != net_count_change {
-            return Err(ValClientError::InvalidState(anyhow::anyhow!("claimed a coin count change of {net_count_change} when in reality it changed from {previous_count} to {current_count}")));
+            return Err(ClientError::InvalidState(anyhow::anyhow!("claimed a coin count change of {net_count_change} when in reality it changed from {previous_count} to {current_count}")));
         }
         Ok(claimed_changes)
     }
@@ -876,7 +861,7 @@ impl Snapshot {
         &self,
         substate: Substate,
         key: S,
-    ) -> Result<Option<D>, ValClientError> {
+    ) -> Result<Option<D>, ClientError> {
         let val = self
             .get_smt_value(
                 substate,
@@ -888,7 +873,7 @@ impl Snapshot {
         }
         let val = stdcode::deserialize(&val)
             .context("fatal deserialization error while getting SMT value")
-            .map_err(ValClientError::InvalidState)?;
+            .map_err(ClientError::InvalidState)?;
         Ok(Some(val))
     }
 
@@ -897,7 +882,7 @@ impl Snapshot {
         &self,
         substate: Substate,
         key: HashVal,
-    ) -> Result<Vec<u8>, ValClientError> {
+    ) -> Result<Vec<u8>, ClientError> {
         let verify_against = match substate {
             Substate::Coins => self.header.coins_hash,
             Substate::History => self.header.history_hash,
@@ -906,10 +891,10 @@ impl Snapshot {
             Substate::Transactions => self.header.transactions_hash,
         };
         self.cache.get_or_try_fill((verify_against, key), async {
-        let (val, branch) = self.raw.get_smt_branch(self.height, substate, key).await.map_err(to_neterr)?.context("smt branch suddenly absent").map_err(ValClientError::InvalidState)?;
-        let branch = branch.decompress().context("invalidly compressed SMT branch").map_err(ValClientError::InvalidState)?;
+        let (val, branch) = self.raw.get_smt_branch(self.height, substate, key).await.map_err(to_neterr)?.context("smt branch suddenly absent").map_err(ClientError::InvalidState)?;
+        let branch = branch.decompress().context("invalidly compressed SMT branch").map_err(ClientError::InvalidState)?;
             if !branch.verify(verify_against.0, key.0, &val) {
-                return Err(ValClientError::InvalidState(anyhow::anyhow!(
+                return Err(ClientError::InvalidState(anyhow::anyhow!(
                     "unable to verify merkle proof for height {:?}, substate {:?}, key {:?}, value {:?}, branch {:?}",
                     self.height, substate, key, val, branch
                 )));
