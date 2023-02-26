@@ -136,8 +136,8 @@ impl Client {
         let _c = self.raw.clone();
 
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
-        // cache key: current time, divided by 10 seconds
-        let cache_key = INCEPTION.elapsed().as_secs() / 10;
+        // cache key: current time
+        let cache_key = INCEPTION.elapsed().as_secs();
         let (height, header, _) = self
             .cache
             .get_or_try_fill((cache_key, "summary"), async {
