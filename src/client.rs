@@ -840,16 +840,8 @@ impl Snapshot {
             .await?
             .get_coin_count(address)
             .await?
-            .ok_or_else(|| {
-                ClientError::InvalidNodeConfig(anyhow::anyhow!(
-                    "node does not keep track of previous count"
-                ))
-            })?;
-        let current_count = self.get_coin_count(address).await?.ok_or_else(|| {
-            ClientError::InvalidNodeConfig(anyhow::anyhow!(
-                "node does not keep track of current count"
-            ))
-        })?;
+            .unwrap_or_default();
+        let current_count = self.get_coin_count(address).await?.unwrap_or_default();
         if current_count as i128 - previous_count as i128 != net_count_change {
             return Err(ClientError::InvalidState(anyhow::anyhow!("claimed a coin count change of {net_count_change} when in reality it changed from {previous_count} to {current_count}")));
         }
