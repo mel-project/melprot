@@ -444,11 +444,11 @@ impl Client {
     }
 
     /// Returns a stream of all transactions relevant to the particular address --- meaning all transactions that either create or spend coins with that address.
-    pub fn stream_transactions(
+    pub fn stream_transactions_from(
         &self,
         height: BlockHeight,
         address: Address,
-    ) -> impl Stream<Item = Transaction> + '_ {
+    ) -> impl Stream<Item = (Transaction, BlockHeight)> + '_ {
         self.stream_snapshots(height)
             .then(move |snapshot| async move {
                 let changes = loop {
@@ -461,15 +461,22 @@ impl Client {
                 };
                 futures_util::stream::iter(changes.into_iter()).filter_map(move |change| {
                     let snapshot = snapshot.clone();
+                    let current_height = snapshot.current_header().height;
                     async move {
                         loop {
                             let fallible = async {
                                 match change {
                                     CoinChange::Add(coin_id) => {
-                                        anyhow::Ok(snapshot.get_transaction(coin_id.txhash).await?)
+                                        anyhow::Ok(Some((
+                                            snapshot.get_transaction(coin_id.txhash).await?.expect("Error retrieving tx."),
+                                            current_height
+                                        )))
                                     }
-                                    CoinChange::Delete(coin_id, txhash) => {
-                                        anyhow::Ok(snapshot.get_transaction(txhash).await?)
+                                    CoinChange::Delete(_coin_id, txhash) => {
+                                        anyhow::Ok(Some((
+                                            snapshot.get_transaction(txhash).await?.expect("Error retrieving tx."),
+                                            current_height
+                                        )))
                                     }
                                 }
                             };
