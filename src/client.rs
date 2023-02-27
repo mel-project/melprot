@@ -459,25 +459,27 @@ impl Client {
                         }
                     }
                 };
-                futures_util::stream::iter(changes.into_iter()).filter_map(move |change| {
+                futures_util::stream::iter(changes.into_iter()).then(move |change| {
                     let snapshot = snapshot.clone();
                     let current_height = snapshot.current_header().height;
                     async move {
                         loop {
                             let fallible = async {
                                 match change {
-                                    CoinChange::Add(coin_id) => {
-                                        anyhow::Ok(Some((
-                                            snapshot.get_transaction(coin_id.txhash).await?.expect("Error retrieving tx."),
-                                            current_height
-                                        )))
-                                    }
-                                    CoinChange::Delete(_coin_id, txhash) => {
-                                        anyhow::Ok(Some((
-                                            snapshot.get_transaction(txhash).await?.expect("Error retrieving tx."),
-                                            current_height
-                                        )))
-                                    }
+                                    CoinChange::Add(coin_id) => anyhow::Ok((
+                                        snapshot
+                                            .get_transaction(coin_id.txhash)
+                                            .await?
+                                            .context("mysteriously missing transaction")?,
+                                        current_height,
+                                    )),
+                                    CoinChange::Delete(_coin_id, txhash) => anyhow::Ok((
+                                        snapshot
+                                            .get_transaction(txhash)
+                                            .await?
+                                            .context("mysteriously missing transaction")?,
+                                        current_height,
+                                    )),
                                 }
                             };
                             match fallible.await {
