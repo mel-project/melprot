@@ -37,5 +37,6 @@ smol_str = "0.1.23"
 melnet2 = "0.3"
 # melnet = "0.2.27"
 futures-util = "0.3.26"
+melbootstrap = "0.8.3"
 [dev-dependencies]
 argh = "0.1.9"

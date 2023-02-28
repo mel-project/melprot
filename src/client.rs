@@ -111,6 +111,13 @@ impl Client {
         ))
     }
 
+    /// A convenience method for automatically connecting a client
+    pub async fn autoconnect(netid: NetID) -> anyhow::Result<Self> {
+        let bootstrap_routes = melbootstrap::bootstrap_routes(netid);
+        let route = *bootstrap_routes.first().context("Error retreiving bootstrap routes")?;
+        Self::connect_http(netid, route).await
+    }
+
     /// Gets the netid.
     pub fn netid(&self) -> NetID {
         self.netid
