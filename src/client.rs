@@ -115,7 +115,10 @@ impl Client {
     pub async fn autoconnect(netid: NetID) -> anyhow::Result<Self> {
         let bootstrap_routes = melbootstrap::bootstrap_routes(netid);
         let route = *bootstrap_routes.first().context("Error retreiving bootstrap routes")?;
-        Self::connect_http(netid, route).await
+        let trusted_height = melbootstrap::checkpoint_height(netid).context("Unable to get checkpoint height")?;
+        let client = Self::connect_http(netid, route).await?;
+        client.trust(trusted_height);
+        Ok(client)
     }
 
     /// Gets the netid.
@@ -396,7 +399,6 @@ impl Client {
                                 .get_transaction(current_txhash)
                                 .await?
                                 .expect("failed to get current transaction");
-
                             let idx = if let Some(idx) = picker(&current_tx) {
                                 idx
                             } else {
@@ -409,13 +411,13 @@ impl Client {
                                 Some(status) => match status {
                                     CoinSpendStatus::NotSpent => {
                                         // Check that it *really is* unspent
-                                        if current_snap.get_coin(next_coin_id).await?.is_some() {
+                                        if current_snap.get_coin(next_coin_id).await?.is_none() {
                                             anyhow::bail!("server lied to us by saying that this coin was not spent")
                                         }
                                         anyhow::Ok(None)
                                     }
                                     CoinSpendStatus::Spent((next_txhash, next_height)) => {
-                                        let snap = current_snap.get_older(next_height).await?;
+                                        let snap = this.snapshot(next_height).await?;
                                         let next_transaction = snap
                                             .get_transaction(next_txhash)
                                             .await?
@@ -429,9 +431,7 @@ impl Client {
                                 None => {
                                     // TODO: have the entire function return an error instead of
                                     // retrying in a loop?
-                                    let err = ClientError::InvalidNodeConfig(
-                                        anyhow::anyhow!("the node this client is connected to does not index coins, so it could not provide a result"));
-                                    Err(anyhow::anyhow!("{}", err.to_string()))
+                                    anyhow::bail!("the node this client is connected to does not index coins, so it could not provide a result");
                                 }
                             }
                         };
