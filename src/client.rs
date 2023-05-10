@@ -1,6 +1,7 @@
 use anyhow::Context;
 // use anyhow::Context;
 
+use bytes::Bytes;
 use derivative::Derivative;
 
 use melnet2::{wire::http::HttpBackhaul, Backhaul};
@@ -28,8 +29,8 @@ use thiserror::Error;
 use tmelcrypt::{HashVal, Hashable};
 
 use crate::{
-    cache::AsyncCache, CoinChange, CoinSpendStatus, InMemoryTrustStore, NodeRpcClient,
-    NodeRpcError, Substate,
+    cache::{StateCache, GLOBAL_CACHE},
+    CoinChange, CoinSpendStatus, InMemoryTrustStore, NodeRpcClient, NodeRpcError, Substate,
 };
 
 /// Standard interface for persisting a trusted block.
@@ -49,7 +50,7 @@ pub struct Client {
     #[derivative(Debug = "ignore")]
     trust_store: Arc<dyn TrustStore + Send + Sync + 'static>,
     #[derivative(Debug = "ignore")]
-    cache: Arc<AsyncCache>,
+    cache: Arc<dyn StateCache>,
 
     #[derivative(Debug = "ignore")]
     raw: Arc<NodeRpcClient<DynRpcTransport>>,
@@ -92,7 +93,7 @@ impl Client {
         Self {
             netid,
             trust_store: Arc::new(trust_store),
-            cache: Arc::new(AsyncCache::new(10000)),
+            cache: GLOBAL_CACHE.read().clone(),
             raw: NodeRpcClient(DynRpcTransport::new(remote.0)).into(),
         }
     }
@@ -114,8 +115,11 @@ impl Client {
     /// A convenience method for automatically connecting a client
     pub async fn autoconnect(netid: NetID) -> anyhow::Result<Self> {
         let bootstrap_routes = melbootstrap::bootstrap_routes(netid);
-        let route = *bootstrap_routes.first().context("Error retreiving bootstrap routes")?;
-        let trusted_height = melbootstrap::checkpoint_height(netid).context("Unable to get checkpoint height")?;
+        let route = *bootstrap_routes
+            .first()
+            .context("Error retreiving bootstrap routes")?;
+        let trusted_height =
+            melbootstrap::checkpoint_height(netid).context("Unable to get checkpoint height")?;
         let client = Self::connect_http(netid, route).await?;
         client.trust(trusted_height);
         Ok(client)
@@ -146,20 +150,13 @@ impl Client {
         let _c = self.raw.clone();
 
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
-        // cache key: current time
-        let cache_key = INCEPTION.elapsed().as_secs();
-        let (height, header, _) = self
-            .cache
-            .get_or_try_fill((cache_key, "summary"), async {
-                let summary = self.raw.get_summary().await.map_err(to_neterr)?;
-                self.validate_height(summary.height, summary.header, summary.proof.clone())
-                    .await?;
-                Ok((summary.height, summary.header, summary.proof))
-            })
+
+        let summary = self.raw.get_summary().await.map_err(to_neterr)?;
+        self.validate_height(summary.height, summary.header, summary.proof.clone())
             .await?;
         Ok(Snapshot {
-            height,
-            header,
+            height: summary.height,
+            header: summary.header,
             raw: self.raw.clone(),
             cache: self.cache.clone(),
         })
@@ -524,7 +521,7 @@ pub struct Snapshot {
     height: BlockHeight,
     header: Header,
     raw: Arc<NodeRpcClient>,
-    cache: Arc<AsyncCache>,
+    cache: Arc<dyn StateCache>,
 }
 
 impl Snapshot {
@@ -559,26 +556,14 @@ impl Snapshot {
             return Ok(self.clone());
         }
         // Get an SMT branch
-        let old_elem: Header = self
-            .cache
-            .get_or_try_fill(("header", old_height), async {
-                let val = self
-                    .get_smt_value(
-                        Substate::History,
-                        tmelcrypt::hash_single(&stdcode::serialize(&old_height).unwrap()),
-                    )
-                    .await?;
-                let old_elem: Header = stdcode::deserialize(&val)
-                    .context("cannot deserialize header")
-                    .map_err(ClientError::InvalidState)?;
-                Ok::<_, ClientError>(old_elem)
-            })
-            .await?;
-        // this can never possibly be bad unless everything is horribly untrustworthy
-        assert_eq!(old_elem.height, old_height);
+        let old_header = self
+            .get_history(old_height)
+            .await?
+            .expect("missing older height in the history SMT");
+
         Ok(Self {
             height: old_height,
-            header: old_elem,
+            header: old_header,
             raw: self.raw.clone(),
             cache: self.cache.clone(),
         })
@@ -606,50 +591,61 @@ impl Snapshot {
         &self,
         get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
     ) -> Result<Block, ClientError> {
-        self.cache
-            .get_or_try_fill(("block", self.height), async {
-                let header = self.current_header();
-                let (block, _) = self
-                    .raw
-                    .get_full_block(self.height, get_known_tx)
-                    .await
-                    .map_err(to_neterr)?
-                    .context("block disappeared from under our feet")
-                    .map_err(ClientError::InvalidState)?;
-                if block.header != header {
-                    return Err(ClientError::InvalidState(anyhow::anyhow!(
-                        "block header does not match: block header {:?} vs snapshot header {:?}",
-                        block.header,
-                        header
-                    )));
-                }
-
-                // TODO support dense merkle trees. Right now we assume the transactions are in a SMT
-                let mut transactions_smt = novasmt::Database::new(InMemoryCas::default())
-                    .get_tree([0u8; 32])
-                    .unwrap();
-                for transaction in block.transactions.iter() {
-                    transactions_smt.insert(
-                        transaction.hash_nosigs().stdcode().hash().0,
-                        &transaction.stdcode(),
-                    );
-                }
-                if HashVal(transactions_smt.root_hash()) != block.header.transactions_hash {
-                    return Err(ClientError::InvalidState(anyhow::anyhow!(
-                        "transactions root does not match: in-header root hash {:?} vs computed {:?}",
-                        block.header.transactions_hash,
-                        HashVal(transactions_smt.root_hash())
-                    )));
-                }
-
-                Ok(block)
-            })
+        let header = self.current_header();
+        let (block, _) = self
+            .raw
+            .get_full_block(self.height, get_known_tx)
             .await
+            .map_err(to_neterr)?
+            .context("block disappeared from under our feet")
+            .map_err(ClientError::InvalidState)?;
+        if block.header != header {
+            return Err(ClientError::InvalidState(anyhow::anyhow!(
+                "block header does not match: block header {:?} vs snapshot header {:?}",
+                block.header,
+                header
+            )));
+        }
+
+        // TODO support dense merkle trees. Right now we assume the transactions are in a SMT
+        let mut transactions_smt = novasmt::Database::new(InMemoryCas::default())
+            .get_tree([0u8; 32])
+            .unwrap();
+        for transaction in block.transactions.iter() {
+            transactions_smt.insert(
+                transaction.hash_nosigs().stdcode().hash().0,
+                &transaction.stdcode(),
+            );
+        }
+        if HashVal(transactions_smt.root_hash()) != block.header.transactions_hash {
+            return Err(ClientError::InvalidState(anyhow::anyhow!(
+                "transactions root does not match: in-header root hash {:?} vs computed {:?}",
+                block.header.transactions_hash,
+                HashVal(transactions_smt.root_hash())
+            )));
+        }
+
+        Ok(block)
     }
 
     /// Gets a historical header.
     pub async fn get_history(&self, height: BlockHeight) -> Result<Option<Header>, ClientError> {
-        self.get_smt_value_serde(Substate::History, height).await
+        // Especially cache because this is invariant w.r.t the current snapshot
+        if height.0 < self.header.height.0 {
+            if let Some(cached) = self.cache.get_header(self.header.network, height).await {
+                return Ok(Some(cached));
+            }
+        }
+        let result: Option<Header> = self.get_smt_value_serde(Substate::History, height).await?;
+        match result {
+            Some(val) => {
+                self.cache
+                    .insert_header(self.header.network, height, val)
+                    .await;
+                Ok(Some(val))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Gets a coin.
@@ -684,52 +680,48 @@ impl Snapshot {
         &self,
         covhash: Address,
     ) -> Result<Option<BTreeMap<CoinID, CoinDataHeight>>, ClientError> {
-        self.cache
-            .get_or_try_fill(("coins", self.height, covhash), async {
-                let coins = self
-                    .raw
-                    .get_some_coins(self.height, covhash)
-                    .await
-                    .map_err(to_neterr)?;
-                if let Some(coins) = coins {
-                    let coins: HashSet<CoinID> = coins.into_iter().collect();
-                    let count = self.get_coin_count(covhash).await?;
-                    if let Some(count) = count {
-                        if count != coins.len() as u64 {
-                            return Err(ClientError::InvalidState(anyhow::anyhow!(
-                                "got incomplete list of {} coins rather than {}",
-                                coins.len(),
-                                count
-                            )));
-                        }
-                    }
-                    // fill in the coins
-                    let mut coin_futs = BTreeMap::new();
-                    for coin in coins {
-                        let this = self.clone();
-                        // TODO spawn this somewhere for parallelness
-                        let fut_data = async move {
-                            let r = this
-                                .get_coin(coin)
-                                .await?
-                                .context("invalid data received while getting coin list")
-                                .map_err(ClientError::InvalidState)?;
-                            Ok::<_, ClientError>(r)
-                        };
-                        coin_futs.insert(coin, fut_data);
-                    }
-                    let mut toret = BTreeMap::new();
-                    for (i, (k, v)) in coin_futs.into_iter().enumerate() {
-                        let v = v.await?;
-                        log::debug!("loading coin {}", i);
-                        toret.insert(k, v);
-                    }
-                    Ok(Some(toret))
-                } else {
-                    Ok(None)
-                }
-            })
+        let coins = self
+            .raw
+            .get_some_coins(self.height, covhash)
             .await
+            .map_err(to_neterr)?;
+        if let Some(coins) = coins {
+            let coins: HashSet<CoinID> = coins.into_iter().collect();
+            let count = self.get_coin_count(covhash).await?;
+            if let Some(count) = count {
+                if count != coins.len() as u64 {
+                    return Err(ClientError::InvalidState(anyhow::anyhow!(
+                        "got incomplete list of {} coins rather than {}",
+                        coins.len(),
+                        count
+                    )));
+                }
+            }
+            // fill in the coins
+            let mut coin_futs = BTreeMap::new();
+            for coin in coins {
+                let this = self.clone();
+                // TODO spawn this somewhere for parallelness
+                let fut_data = async move {
+                    let r = this
+                        .get_coin(coin)
+                        .await?
+                        .context("invalid data received while getting coin list")
+                        .map_err(ClientError::InvalidState)?;
+                    Ok::<_, ClientError>(r)
+                };
+                coin_futs.insert(coin, fut_data);
+            }
+            let mut toret = BTreeMap::new();
+            for (i, (k, v)) in coin_futs.into_iter().enumerate() {
+                let v = v.await?;
+                log::debug!("loading coin {}", i);
+                toret.insert(k, v);
+            }
+            Ok(Some(toret))
+        } else {
+            Ok(None)
+        }
     }
 
     /// A helper function to gets the CoinDataHeight for a coin *spent* at this height. This requires special handling because if the coin was created and spent at the same height, then the coin would never appear in a confirmed coin mapping.
@@ -890,24 +882,42 @@ impl Snapshot {
         &self,
         substate: Substate,
         key: HashVal,
-    ) -> Result<Vec<u8>, ClientError> {
-        let verify_against = match substate {
-            Substate::Coins => self.header.coins_hash,
-            Substate::History => self.header.history_hash,
-            Substate::Pools => self.header.pools_hash,
-            Substate::Stakes => self.header.stakes_hash,
-            Substate::Transactions => self.header.transactions_hash,
-        };
-        self.cache.get_or_try_fill((verify_against, key), async {
-        let (val, branch) = self.raw.get_smt_branch(self.height, substate, key).await.map_err(to_neterr)?.context("smt branch suddenly absent").map_err(ClientError::InvalidState)?;
-        let branch = branch.decompress().context("invalidly compressed SMT branch").map_err(ClientError::InvalidState)?;
+    ) -> Result<Bytes, ClientError> {
+        if let Some(cached) = self
+            .cache
+            .get_smt_branch(self.header.hash(), substate, key)
+            .await
+        {
+            Ok(cached)
+        } else {
+            let verify_against = match substate {
+                Substate::Coins => self.header.coins_hash,
+                Substate::History => self.header.history_hash,
+                Substate::Pools => self.header.pools_hash,
+                Substate::Stakes => self.header.stakes_hash,
+                Substate::Transactions => self.header.transactions_hash,
+            };
+            let (val, branch) = self
+                .raw
+                .get_smt_branch(self.height, substate, key)
+                .await
+                .map_err(to_neterr)?
+                .context("smt branch suddenly absent")
+                .map_err(ClientError::InvalidState)?;
+            let branch = branch
+                .decompress()
+                .context("invalidly compressed SMT branch")
+                .map_err(ClientError::InvalidState)?;
             if !branch.verify(verify_against.0, key.0, &val) {
                 return Err(ClientError::InvalidState(anyhow::anyhow!(
                     "unable to verify merkle proof for height {:?}, substate {:?}, key {:?}, value {:?}, branch {:?}",
                     self.height, substate, key, val, branch
                 )));
             }
-            Ok(val)
-        }).await
+            self.cache
+                .insert_smt_branch(self.header.hash(), substate, key, &val)
+                .await;
+            Ok(val.into())
+        }
     }
 }
