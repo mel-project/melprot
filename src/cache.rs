@@ -4,7 +4,7 @@ use arrayref::array_ref;
 use async_trait::async_trait;
 use bytes::Bytes;
 use lru::LruCache;
-use melstructs::{BlockHeight, Header, NetID};
+use melstructs::{BlockHeight, CoinID, Header, NetID, TxHash};
 use mini_moka::sync::Cache;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use stdcode::StdcodeSerializeExt;
 use tmelcrypt::{HashVal, Hashable};
 
-use crate::Substate;
+use crate::{CoinSpendStatus, Substate};
 
 /// Global cache
 pub(crate) static GLOBAL_CACHE: Lazy<RwLock<Arc<dyn StateCache>>> =
@@ -45,12 +45,14 @@ impl InMemoryStateCache {
 impl StateCache for InMemoryStateCache {
     async fn get_blob(&self, key: &[u8]) -> Option<Bytes> {
         let key: Bytes = key.to_vec().into();
-        self.inner.get(&key)
+        let res = self.inner.get(&key);
+        log::debug!("memcache: {:?} hit? {}", key, res.is_some());
+        res
     }
 
     async fn insert_blob(&self, key: &[u8], value: &[u8]) {
         self.inner
-            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value))
+            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
 }
 
@@ -70,7 +72,21 @@ pub trait StateCache: Send + Sync + 'static {
                 .get_blob(&("header", network, height).stdcode())
                 .await?,
         )
-        .ok()?
+        .ok()
+    }
+
+    /// Gets a coin-spend status, for a *spent* coin, from the cache.
+    async fn get_spend_location(&self, coin: CoinID) -> Option<(TxHash, BlockHeight)> {
+        stdcode::deserialize(&self.get_blob(&("spend_location", coin).stdcode()).await?).ok()
+    }
+
+    /// Inserts a coin-spend status, for a *spent* coin, into the cache.
+    async fn insert_spend_location(&self, coin: CoinID, txhash: TxHash, height: BlockHeight) {
+        self.insert_blob(
+            &("spend_location", coin).stdcode(),
+            &(txhash, height).stdcode(),
+        )
+        .await;
     }
 
     /// Inserts a historical header from the cache.
@@ -100,46 +116,5 @@ pub trait StateCache: Send + Sync + 'static {
     ) {
         self.insert_blob(&("smt", header_hash, tree, branch).stdcode(), value)
             .await
-    }
-}
-
-const SHARDS: usize = 6;
-
-pub struct AsyncCache {
-    inner: [Mutex<LruCache<HashVal, Bytes, BuildHasherDefault<FxHasher>>>; SHARDS],
-}
-
-impl AsyncCache {
-    pub fn new(size: u64) -> Self {
-        let mut vv = vec![];
-        for _ in 0..SHARDS {
-            vv.push(Mutex::new(LruCache::with_hasher(
-                size as usize / SHARDS,
-                BuildHasherDefault::<FxHasher>::default(),
-            )))
-        }
-        Self {
-            inner: vv.try_into().ok().expect("le fail"),
-        }
-    }
-
-    pub async fn get_or_try_fill<K: Serialize, V: Serialize + DeserializeOwned, E>(
-        &self,
-        key: K,
-        fallback: impl Future<Output = Result<V, E>>,
-    ) -> Result<V, E> {
-        let key = key.stdcode().hash();
-        let bucket = (u64::from_le_bytes(*array_ref![key.0, 0, 8]) % (SHARDS as u64)) as usize;
-
-        let b = self.inner[bucket].lock().get(&key).cloned();
-        if let Some(b) = b {
-            log::trace!("cache HIT for key {}", hex::encode(key));
-            Ok(stdcode::deserialize(&b).expect("badly serialized thing in cache"))
-        } else {
-            log::trace!("cache MISS for key {}", hex::encode(key));
-            let res = fallback.await?;
-            self.inner[bucket].lock().put(key, res.stdcode().into());
-            Ok(res)
-        }
     }
 }

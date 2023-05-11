@@ -403,16 +403,10 @@ impl Client {
                             };
 
                             let next_coin_id = CoinID::new(current_txhash, idx as u8);
-                            let coin_spend_status = this.raw.get_coin_spend(next_coin_id).await?;
+                            let coin_spend_status = this.get_coin_spend(next_coin_id).await?;
                             match coin_spend_status {
                                 Some(status) => match status {
-                                    CoinSpendStatus::NotSpent => {
-                                        // Check that it *really is* unspent
-                                        if current_snap.get_coin(next_coin_id).await?.is_none() {
-                                            anyhow::bail!("server lied to us by saying that this coin was not spent")
-                                        }
-                                        anyhow::Ok(None)
-                                    }
+                                    CoinSpendStatus::NotSpent => anyhow::Ok(None),
                                     CoinSpendStatus::Spent((next_txhash, next_height)) => {
                                         let snap = this.snapshot(next_height).await?;
                                         let next_transaction = snap
@@ -445,6 +439,51 @@ impl Client {
                 }
             },
         ))
+    }
+
+    /// Gets the coin-spend status of this coin_id.
+    pub async fn get_coin_spend(
+        &self,
+        coin_id: CoinID,
+    ) -> Result<Option<CoinSpendStatus>, ClientError> {
+        if let Some(v) = self.cache.get_spend_location(coin_id).await {
+            return Ok(Some(CoinSpendStatus::Spent(v)));
+        }
+        let current_snap = self.latest_snapshot().await?;
+        let coin_spend_status = self
+            .raw
+            .get_coin_spend(coin_id)
+            .await
+            .map_err(|e| ClientError::NetworkError(e.into()))?;
+        match coin_spend_status {
+            Some(status) => match status {
+                CoinSpendStatus::NotSpent => {
+                    // Check that it *really is* unspent
+                    if current_snap.get_coin(coin_id).await?.is_none() {
+                        return Err(ClientError::InvalidState(anyhow::anyhow!(
+                            "server lied to us by saying that this coin was not spent"
+                        )));
+                    }
+                    Ok(Some(status))
+                }
+                CoinSpendStatus::Spent((next_txhash, next_height)) => {
+                    let snap = self.snapshot(next_height).await?;
+                    snap.get_transaction(next_txhash)
+                        .await?
+                        .context("node lied to us about a transaction here")
+                        .map_err(ClientError::InvalidState)?;
+                    self.cache
+                        .insert_spend_location(coin_id, next_txhash, next_height)
+                        .await;
+                    Ok(Some(status))
+                }
+            },
+            None => {
+                return Err(ClientError::InvalidNodeConfig(anyhow::anyhow!(
+                    "not indexing coin spends"
+                )))
+            }
+        }
     }
 
     /// Returns a stream of all transactions relevant to the particular address --- meaning all transactions that either create or spend coins with that address.
@@ -633,6 +672,7 @@ impl Snapshot {
         // Especially cache because this is invariant w.r.t the current snapshot
         if height.0 < self.header.height.0 {
             if let Some(cached) = self.cache.get_header(self.header.network, height).await {
+                log::debug!("exceptional history hit!!!");
                 return Ok(Some(cached));
             }
         }
@@ -642,6 +682,7 @@ impl Snapshot {
                 self.cache
                     .insert_header(self.header.network, height, val)
                     .await;
+                log::debug!("inserted into history cache for {height}");
                 Ok(Some(val))
             }
             None => Ok(None),

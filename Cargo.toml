@@ -1,6 +1,6 @@
 [package]
 name = "melprot"
-version = "0.14.0-alpha.0"
+version = "0.13.5"
 edition = "2021"
 
 description = "High-level API for the Mel full node peer-to-peer protocol."
