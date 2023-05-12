@@ -7,7 +7,7 @@ use derivative::Derivative;
 use melnet2::{wire::http::HttpBackhaul, Backhaul};
 
 use nanorpc::{DynRpcTransport, RpcTransport};
-use novasmt::{Database, InMemoryCas, Tree};
+use novasmt::{Database, InMemoryCas};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
 use smol::Task;
@@ -26,7 +26,7 @@ use melstructs::{
     Header, NetID, PoolKey, PoolState, StakeDoc, Transaction, TxHash, STAKE_EPOCH,
 };
 use thiserror::Error;
-use tmelcrypt::{HashVal, Hashable};
+use tmelcrypt::{Ed25519PK, HashVal, Hashable};
 
 use crate::{
     cache::{StateCache, GLOBAL_CACHE},
@@ -180,7 +180,7 @@ impl Client {
         smolscale::spawn(async move {
             let safe_stakers = {
                 loop {
-                    let (safe_height, safe_stakers) = this.get_trusted_stakers().await?;
+                    let (safe_height, safe_stakers) = this.best_staker_votes().await?;
                     if height.epoch() > safe_height.epoch() + 1 {
                         log::error!(
                     "OUTDATED CHECKPOINT: trusted height {} in epoch {} but remote height {} in epoch {}. Continuing with best-effort to update checkpoint",
@@ -227,16 +227,11 @@ impl Client {
             // we use the stakers to validate the latest summary
             let mut good_votes = CoinValue(0);
             let mut total_votes = CoinValue(0);
-            for (_, doc) in safe_stakers.iter() {
-                let doc: StakeDoc = stdcode::deserialize(&doc)
-                    .context("cannot deserialize stakedoc")
-                    .map_err(ClientError::InvalidState)?;
-                if height.epoch() >= doc.e_start && height.epoch() < doc.e_post_end {
-                    total_votes += doc.syms_staked;
-                    if let Some(sig) = proof.get(&doc.pubkey) {
-                        if doc.pubkey.verify(&header.hash(), sig) {
-                            good_votes += doc.syms_staked
-                        }
+            for (pubkey, &syms_staked) in safe_stakers.iter() {
+                total_votes += syms_staked;
+                if let Some(sig) = proof.get(pubkey) {
+                    if pubkey.verify(&header.hash(), sig) {
+                        good_votes += syms_staked
                     }
                 }
             }
@@ -258,13 +253,18 @@ impl Client {
         })
     }
 
-    /// Helper function to obtain the trusted staker set.
-    async fn get_trusted_stakers(&self) -> Result<(BlockHeight, Tree<InMemoryCas>), ClientError> {
+    /// Helper function to obtain the most recent staker votes map.
+    async fn best_staker_votes(
+        &self,
+    ) -> Result<(BlockHeight, BTreeMap<Ed25519PK, CoinValue>), ClientError> {
         let checkpoint = self
             .trust_store
             .get(self.netid)
             .context("expected to find a trusted block while fetching trusted stakers")
             .map_err(ClientError::InvalidState)?;
+        if let Some(val) = self.cache.get_staker_votes(checkpoint.height.epoch()).await {
+            return Ok((checkpoint.height, val));
+        }
 
         let temp_forest = Database::new(InMemoryCas::default());
         let stakers = self
@@ -301,6 +301,32 @@ impl Client {
                 "remote staker set contradicted valid header"
             )));
         }
+
+        let mapping: Result<Vec<_>, _> = mapping
+            .iter()
+            .map(|(_, doc)| {
+                let doc: StakeDoc = stdcode::deserialize(&doc)
+                    .context("cannot deserialize stakedoc")
+                    .map_err(ClientError::InvalidState)?;
+
+                Ok(doc)
+            })
+            .collect();
+        let mapping = mapping?
+            .into_iter()
+            .fold(BTreeMap::new(), |mut accum, doc| {
+                if checkpoint.height.epoch() >= doc.e_start
+                    && checkpoint.height.epoch() < doc.e_post_end
+                {
+                    *accum.entry(doc.pubkey).or_default() += doc.syms_staked
+                }
+                accum
+            });
+
+        self.cache
+            .insert_staker_votes(checkpoint.height.epoch(), mapping.clone())
+            .await;
+
         Ok((checkpoint.height, mapping))
     }
 

@@ -1,19 +1,17 @@
-use std::{convert::TryInto, future::Future, hash::BuildHasherDefault, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
-use arrayref::array_ref;
 use async_trait::async_trait;
 use bytes::Bytes;
-use lru::LruCache;
-use melstructs::{BlockHeight, CoinID, Header, NetID, TxHash};
+
+use melstructs::{BlockHeight, CoinID, CoinValue, Header, NetID, TxHash};
 use mini_moka::sync::Cache;
 use once_cell::sync::Lazy;
-use parking_lot::{Mutex, RwLock};
-use rustc_hash::FxHasher;
-use serde::{de::DeserializeOwned, Serialize};
-use stdcode::StdcodeSerializeExt;
-use tmelcrypt::{HashVal, Hashable};
+use parking_lot::RwLock;
 
-use crate::{CoinSpendStatus, Substate};
+use stdcode::StdcodeSerializeExt;
+use tmelcrypt::{Ed25519PK, HashVal};
+
+use crate::Substate;
 
 /// Global cache
 pub(crate) static GLOBAL_CACHE: Lazy<RwLock<Arc<dyn StateCache>>> =
@@ -73,6 +71,17 @@ pub trait StateCache: Send + Sync + 'static {
                 .await?,
         )
         .ok()
+    }
+
+    /// Get the *live* staker voting set for a particular epoch.
+    async fn get_staker_votes(&self, epoch: u64) -> Option<BTreeMap<Ed25519PK, CoinValue>> {
+        stdcode::deserialize(&self.get_blob(&("staker_votes", epoch).stdcode()).await?).ok()
+    }
+
+    /// Inserts the *live* staker voting set for a particular epoch.
+    async fn insert_staker_votes(&self, epoch: u64, votes: BTreeMap<Ed25519PK, CoinValue>) {
+        self.insert_blob(&("staker_votes", epoch).stdcode(), &votes.stdcode())
+            .await;
     }
 
     /// Gets a coin-spend status, for a *spent* coin, from the cache.
