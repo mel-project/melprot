@@ -148,7 +148,6 @@ impl Client {
     /// Obtains a validated snapshot based on what height was trusted.
     pub async fn latest_snapshot(&self) -> Result<Snapshot, ClientError> {
         let _c = self.raw.clone();
-
         static INCEPTION: Lazy<Instant> = Lazy::new(Instant::now);
 
         let summary = self.raw.get_summary().await.map_err(to_neterr)?;
@@ -182,6 +181,7 @@ impl Client {
                 loop {
                     let (safe_height, safe_stakers) = this.best_staker_votes().await?;
                     if height.epoch() > safe_height.epoch() + 1 {
+                        // println!("we're way behind man");
                         log::error!(
                     "OUTDATED CHECKPOINT: trusted height {} in epoch {} but remote height {} in epoch {}. Continuing with best-effort to update checkpoint",
                     safe_height,
@@ -206,6 +206,7 @@ impl Client {
                     } else if height.epoch() > safe_height.epoch()
                         && safe_height.epoch() == (safe_height + BlockHeight(1)).epoch()
                     {
+                        // println!("crossing epoch boundary!");
                         // to cross the epoch, we must obtain the epoch-terminal snapshot first.
                         // this places the correct thing in the cache, which then lets this one verify too.
                         let epoch_ending_height =
@@ -220,6 +221,7 @@ impl Client {
                         this.validate_height(epoch_ending_height, old_block.header, old_proof)
                             .await?;
                     } else {
+                        // println!("yay safe");
                         break safe_stakers;
                     }
                 }
@@ -235,7 +237,6 @@ impl Client {
                     }
                 }
             }
-
             if good_votes < total_votes * 2 / 3 {
                 return Err(ClientError::InvalidState(anyhow::anyhow!(
                     "remote height {} has insufficient votes (total_votes = {}, good_votes = {})",
@@ -553,9 +554,13 @@ impl Client {
                             };
                             match fallible.await {
                                 Err(err) => {
+                                    println!("could not resolve change {:?}: {err}", change);
                                     log::warn!("could not resolve change {:?}: {err}", change)
                                 }
-                                Ok(val) => return val,
+                                Ok(val) => {
+                                    println!("got txs for this height");
+                                    return val;
+                                }
                             }
                         }
                     }
