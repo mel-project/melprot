@@ -125,6 +125,24 @@ impl Client {
         Ok(client)
     }
 
+    pub async fn autoconnect_with_truststore(
+        netid: NetID,
+        trust_store: impl TrustStore + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
+        let bootstrap_routes = melbootstrap::bootstrap_routes(netid);
+        let route = *bootstrap_routes
+            .first()
+            .context("Error retreiving bootstrap routes")?;
+        static BACKHAUL: Lazy<HttpBackhaul> = Lazy::new(HttpBackhaul::new);
+        let rpc_client = NodeRpcClient(BACKHAUL.connect(route.to_string().into()).await?);
+        let melclient = Client::new_with_truststore(netid, rpc_client, trust_store);
+        let trusted_height =
+            melbootstrap::checkpoint_height(netid).context("Unable to get checkpoint height")?;
+        melclient.trust(trusted_height);
+
+        Ok(melclient)
+    }
+
     /// Gets the netid.
     pub fn netid(&self) -> NetID {
         self.netid
