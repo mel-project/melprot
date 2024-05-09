@@ -112,6 +112,19 @@ impl Client {
         ))
     }
 
+    pub async fn connect_http_with_truststore(
+        netid: NetID,
+        addr: SocketAddr,
+        trust_store: impl TrustStore + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
+        /// Global backhaul for caching connections etc
+        static BACKHAUL: Lazy<HttpBackhaul> = Lazy::new(HttpBackhaul::new);
+        let rpc_client = NodeRpcClient(BACKHAUL.connect(addr.to_string().into()).await?);
+
+        // one-off set up to "trust" a custom network.
+        Ok(Self::new_with_truststore(netid, rpc_client, trust_store))
+    }
+
     /// A convenience method for automatically connecting a client
     pub async fn autoconnect(netid: NetID) -> anyhow::Result<Self> {
         let bootstrap_routes = melbootstrap::bootstrap_routes(netid);
