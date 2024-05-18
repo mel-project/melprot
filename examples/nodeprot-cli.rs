@@ -1,18 +1,16 @@
-use std::{collections::BTreeMap, net::SocketAddr};
-
-use argh::FromArgs;
-
+use clap::{Parser, Subcommand};
 use melnet2::{wire::http::HttpBackhaul, Backhaul};
 use melprot::Substate;
 use melprot::{Client, NodeRpcClient, Snapshot};
 use melstructs::{
     Address, BlockHeight, CoinDataHeight, CoinID, Header, NetID, PoolKey, PoolState, TxHash,
 };
+use std::{collections::BTreeMap, net::SocketAddr};
 use tmelcrypt::HashVal;
 
 fn main() {
     smolscale::block_on(async move {
-        let args: Args = argh::from_env();
+        let args = Args::parse();
         let backhaul = HttpBackhaul::new();
         let rpc_client = NodeRpcClient::from(
             backhaul
@@ -169,24 +167,23 @@ async fn print_snapshot_info(snapshot: Snapshot, args: SnapshotArgs) {
     );
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
 /// Top-level command specifying the RPC method to call.
+#[derive(Parser, PartialEq, Debug)]
 pub struct Args {
-    #[argh(subcommand)]
     /// umbrella field for the RPC method to call.
+    #[command(subcommand)]
     client_method: ClientMethod,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// the address of the node server to talk to.
     addr: SocketAddr,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// network ID.
     netid: NetID,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand)]
+#[derive(Subcommand, PartialEq, Debug, Clone)]
 enum ClientMethod {
     // Client methods
     Snapshot(SnapshotArgs),
@@ -202,120 +199,120 @@ enum ClientMethod {
     GetSomeCoinsRaw(GetSomeCoinsArgs),
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "snapshot")]
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "snapshot")]
 /// Arguments for the `Snapshot` command.
 /// These arguments are valid for `OlderSnapshot` as well.
 struct SnapshotArgs {
-    #[argh(option)]
+    #[arg(short, long)]
     /// block height
     height: Option<BlockHeight>,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// coin ID
     coin_id: Option<CoinID>,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// covhash address
     covhash: Option<Address>,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// pool key `Denom`
     denom: Option<PoolKey>,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// staking transaction hash
     staking_txhash: Option<HashVal>,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// transaction hash
     txhash: Option<TxHash>,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// SMT substate
     smt_substate: Option<Substate>,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// SMT key
     smt_key: Option<HashVal>,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "get_trusted_stakers_args")]
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "get_trusted_stakers_args")]
 /// Arguments for the `GetTrustedStakers` command.
 struct GetTrustedStakerArgs {}
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "send_tx_args")]
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "send_tx_args")]
 /// Arguments for the `SendTx` RPC.
 struct SendTxArgs {
-    #[argh(option)]
+    #[arg(short, long)]
     /// transaction string to send
     transaction: String,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "get_summary")]
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "get_summary")]
 /// Arguments for the `SendTx` RPC.
 struct GetSummaryArgs {}
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "get_abbr_block")]
 /// Arguments for the `GetAbbrBlock` RPC.
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "get_abbr_block")]
 struct GetAbbrBlockArgs {
-    #[argh(option)]
+    #[arg(short, long)]
     /// block height
     height: BlockHeight,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "get_smt_branch")]
 /// Arguments for the `GetSmtBranch` RPC.
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "get_smt_branch")]
 struct GetSmtBranchArgs {
-    #[argh(option)]
+    #[arg(short, long)]
     /// block height
     height: BlockHeight,
-    #[argh(option)]
+    #[arg(short, long)]
 
     /// substate
     substate: Substate,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// hash value
     hashval: HashVal,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "get_stakers_raw")]
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "get_stakers_raw")]
 /// Arguments for the `GetStakersRaw` RPC.
 struct GetStakersRawArgs {
-    #[argh(option)]
+    #[arg(short, long)]
     /// block height
     height: BlockHeight,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "get_partial_block")]
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "get_partial_block")]
 /// Arguments for the `GetPartialBlock` RPC.
 struct GetPartialBlockArgs {
-    #[argh(option)]
+    #[arg(short, long)]
     /// block height
     height: BlockHeight,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// transaction hashes
     tx_hashes: Vec<TxHash>,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "get_some_coins")]
+#[derive(Parser, PartialEq, Debug, Clone)]
+#[command(name = "get_some_coins")]
 /// Arguments for the `GetSomeCoins` RPC.
 struct GetSomeCoinsArgs {
-    #[argh(option)]
+    #[arg(short, long)]
     /// block height
     height: BlockHeight,
 
-    #[argh(option)]
+    #[arg(short, long)]
     /// address
     address: Address,
 }

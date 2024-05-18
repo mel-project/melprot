@@ -1,5 +1,4 @@
 use anyhow::Context;
-// use anyhow::Context;
 
 use bytes::Bytes;
 use derivative::Derivative;
@@ -367,7 +366,7 @@ impl Client {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let traversal = client.traverse_back(
     ///     BlockHeight(100000),
     ///     "674735b7b7e4163f7404715bd6b8433a8db523c52279ad07e2b4e88a6708d873".parse().unwrap(),
