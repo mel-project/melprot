@@ -2,42 +2,33 @@
 name = "melprot"
 version = "0.13.8"
 edition = "2021"
-
 description = "High-level API for the Mel full node peer-to-peer protocol."
 license = "MPL-2.0"
 repository = "https://github.com/themeliolabs/melprot"
 
-[dependencies.serde]
-version = "1.0.147"
-features = ["derive"]
-
 [dependencies]
-hex = "0.4.3"
-log = "0.4.17"
-novasmt = "0.2.19"
-smol = "1.2.5"
-smolscale = "0.3.49"
-stdcode = "0.1.13"
-melstructs="0.3"
-tmelcrypt = "0.2.6"
-thiserror = "1.0.37"
-anyhow= "1.0.66"
-async-trait = "0.1.68"
-bytes = { version = "1.3.0", features = ["serde"] }
+log = "0.4.21"
+novasmt = "0.2.20"
+smol = "2.0.0"
+smolscale = "0.4.4"
+stdcode = "0.1.14"
+melstructs = "0.3"
+tmelcrypt = "0.2.7"
+thiserror = "1.0.61"
+anyhow = "1.0.85"
+async-trait = "0.1.80"
+bytes = { version = "1.6.0", features = ["serde"] }
 derivative = "2.2.0"
-lru = "0.7.8"
-once_cell = "1.16.0"
-async-recursion = "1.0.0"
-rustc-hash = "1.1.0"
-arrayref = "0.3.6"
-parking_lot = "0.12.1"
+once_cell = "1.19.0"
+async-recursion = "1.1.1"
+parking_lot = "0.12.2"
 nanorpc = "0.1.12"
-serde_json = "1.0.89"
-smol_str = "0.1.23"
 melnet2 = "0.3"
-# melnet = "0.2.27"
-futures-util = "0.3.26"
-melbootstrap = "0.8.3"
-mini-moka = "0.10.0"
+futures-util = "0.3.30"
+melbootstrap = "0.8.5"
+mini-moka = "0.10.3"
+serde = { version = "1.0.202", features = ["derive"] }
+serde_json = "1.0.117"
+
 [dev-dependencies]
-argh = "0.1.9"
+argh = "0.1.12"
