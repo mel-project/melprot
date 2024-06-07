@@ -692,7 +692,6 @@ impl Snapshot {
         &self,
         get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
     ) -> Result<Block, ClientError> {
-        dbg!(self.height);
         let header = self.current_header();
         let (block, _) = self
             .raw
@@ -794,7 +793,6 @@ impl Snapshot {
             let coins: HashSet<CoinID> = coins.into_iter().collect();
             let count = self.get_coin_count(covhash).await?;
             if let Some(count) = count {
-                dbg!(count);
                 if count != coins.len() as u64 {
                     return Err(ClientError::InvalidState(anyhow::anyhow!(
                         "got incomplete list of {} coins rather than {}",
