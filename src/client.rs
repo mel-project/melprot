@@ -304,7 +304,7 @@ impl Client {
             .get_stakers_raw(checkpoint.height)
             .await
             .map_err(to_neterr)?
-            .context("server did not give us the stakers for the height")
+            .context(format!("server did not give us the stakers for height {}", checkpoint.height))
             .map_err(ClientError::InvalidState)?;
         // first obtain trusted SMT branch
         let (abbr_block, _) = self
@@ -312,7 +312,7 @@ impl Client {
             .get_abbr_block(checkpoint.height)
             .await
             .map_err(to_neterr)?
-            .context("server did not give us the abbr block for the height")
+            .context(format!("server did not give us the abbr block {}", checkpoint.height))
             .map_err(ClientError::InvalidState)?;
         if abbr_block.header.hash() != checkpoint.header_hash {
             return Err(ClientError::InvalidState(anyhow::anyhow!(
@@ -692,6 +692,7 @@ impl Snapshot {
         &self,
         get_known_tx: impl Fn(TxHash) -> Option<Transaction>,
     ) -> Result<Block, ClientError> {
+        dbg!(self.height);
         let header = self.current_header();
         let (block, _) = self
             .raw
@@ -783,6 +784,7 @@ impl Snapshot {
         &self,
         covhash: Address,
     ) -> Result<Option<BTreeMap<CoinID, CoinDataHeight>>, ClientError> {
+        println!("GETTING COYNES");
         let coins = self
             .raw
             .get_some_coins(self.height, covhash)
@@ -792,6 +794,7 @@ impl Snapshot {
             let coins: HashSet<CoinID> = coins.into_iter().collect();
             let count = self.get_coin_count(covhash).await?;
             if let Some(count) = count {
+                dbg!(count);
                 if count != coins.len() as u64 {
                     return Err(ClientError::InvalidState(anyhow::anyhow!(
                         "got incomplete list of {} coins rather than {}",
