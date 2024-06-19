@@ -7,6 +7,7 @@ use derivative::Derivative;
 use melnet2::{wire::http::HttpBackhaul, Backhaul};
 
 use nanorpc::{DynRpcTransport, RpcTransport};
+use nanorpc_http::client::Proxy;
 use novasmt::{Database, InMemoryCas};
 use once_cell::sync::Lazy;
 use serde::{de::DeserializeOwned, Serialize};
@@ -96,6 +97,20 @@ impl Client {
             cache: GLOBAL_CACHE.read().clone(),
             raw: NodeRpcClient(DynRpcTransport::new(remote.0)).into(),
         }
+    }
+
+    pub async fn connect_with_proxy(
+        netid: NetID,
+        proxy_addr: SocketAddr,
+        remote_addr: String,
+    ) -> anyhow::Result<Self> {
+        let backhaul = HttpBackhaul::new_with_proxy(Proxy::Socks5(proxy_addr));
+        let rpc_client = NodeRpcClient(backhaul.connect(remote_addr.to_string().into()).await?);
+        Ok(Self::new_with_truststore(
+            netid,
+            rpc_client,
+            InMemoryTrustStore::new(),
+        ))
     }
 
     /// A convenience method for connecting to a given address.
@@ -304,7 +319,10 @@ impl Client {
             .get_stakers_raw(checkpoint.height)
             .await
             .map_err(to_neterr)?
-            .context(format!("server did not give us the stakers for height {}", checkpoint.height))
+            .context(format!(
+                "server did not give us the stakers for height {}",
+                checkpoint.height
+            ))
             .map_err(ClientError::InvalidState)?;
         // first obtain trusted SMT branch
         let (abbr_block, _) = self
@@ -312,7 +330,10 @@ impl Client {
             .get_abbr_block(checkpoint.height)
             .await
             .map_err(to_neterr)?
-            .context(format!("server did not give us the abbr block {}", checkpoint.height))
+            .context(format!(
+                "server did not give us the abbr block {}",
+                checkpoint.height
+            ))
             .map_err(ClientError::InvalidState)?;
         if abbr_block.header.hash() != checkpoint.header_hash {
             return Err(ClientError::InvalidState(anyhow::anyhow!(
