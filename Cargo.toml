@@ -33,13 +33,14 @@ arrayref = "0.3.6"
 parking_lot = "0.12.1"
 nanorpc = "0.1.12"
 serde_json = "1.0.89"
-smol_str = "0.1.23"
-# melnet2 = "0.3"
-melnet2 = { git = "https://github.com/mel-project/melnet2", branch = "socks5" }
-nanorpc-http = { git = "https://github.com/antidmg/nanorpc-http", branch = "new-with-proxy" }
+smol_str = "0.1.23" 
+melnet2 = "0.3.2"
+# melnet2 = { git = "https://github.com/mel-project/melnet2", branch = "socks5" }
+# nanorpc-http = { git = "https://github.com/antidmg/nanorpc-http", branch = "new-with-proxy" }
 
 futures-util = "0.3.26"
 melbootstrap = "0.8.3"
 mini-moka = "0.10.0"
+nanorpc-http = "0.1.4"
 [dev-dependencies]
 argh = "0.1.9"
