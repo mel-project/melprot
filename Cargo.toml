@@ -34,7 +34,7 @@ parking_lot = "0.12.1"
 nanorpc = "0.1.12"
 serde_json = "1.0.89"
 smol_str = "0.1.23" 
-melnet2 = "0.3.2"
+melnet2 = "0.3.3"
 # melnet2 = { git = "https://github.com/mel-project/melnet2", branch = "socks5" }
 # nanorpc-http = { git = "https://github.com/antidmg/nanorpc-http", branch = "new-with-proxy" }
 
